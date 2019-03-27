@@ -8,6 +8,7 @@ setup(
     author="Parsa Hosseini, Ph.D.",
     author_email="phossein@redhat.com",
     url="https://gitlab.cee.redhat.com/phossein/rad",
+    packages=['rad'],
     install_requires=["numpy",
                       "pandas",
                       "pyarrow",
