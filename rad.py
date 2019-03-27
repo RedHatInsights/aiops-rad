@@ -312,3 +312,265 @@ def preprocess_on(frame, on, min_records=50, index=None, drop=None):
 
     except KeyError:
         logging.error("`on` must exist in either index-name or column(s).")
+
+
+class IsolationForest:
+    """
+    Constructs an ensemble anomaly detection data-structure known as an
+    IsolationForest, or IF. How an IF works is by partitioning a user-specified
+    data-set into and defining magnitude of anomaly to be inversely proportional
+    to the number of slices or partitions. The reasoning here is that an
+    anomalous record would require fewer slices to be isolated on its own,
+    compared to a "normal" or expected record.
+    Much of this logic is inspired by https://github.com/mgckind/iso_forest
+
+    Args:
+        array (ndarray): numeric array comprised of N records.
+        num_trees (int): number of trees to make in this ensemble.
+        sample_size (int): number of records randomly selected per tree.
+        limit (int): maximum tree depth.
+        seed (int): random number generator seed.
+    """
+    def __init__(self, array, num_trees, sample_size, limit=None, seed=None):
+        self.num_trees = num_trees
+        self.X = pd.DataFrame(array)
+        self.num_records = len(array)
+        self.sample_size = sample_size
+        self.trees = []
+        self.limit = limit
+        self.rng = np.random.RandomState(seed)
+
+        # ensure that the data is truly numeric
+        if self.X.shape != self.X.select_dtypes(include=np.number).shape:
+            raise ValueError("Non-numeric features found. Try `preprocess`.")
+
+        # set the height limit
+        if limit is None:
+            self.limit = int(np.ceil(np.log2(self.sample_size)))
+
+        # train a tree around a subset of the data, hence ensemble
+        for _ in range(self.num_trees):
+
+            # select so-many rows
+            ix = self.rng.choice(range(self.num_records), self.sample_size)
+            subset = self.X.values[ix]
+            self.trees.append(IsolationTree(subset, 0, self.limit, seed=seed))
+
+    @staticmethod
+    def save_to(forest, out_file):
+        handle = open(out_file, "wb")
+        pickle.dump(forest, handle, protocol=-1)
+        handle.close()
+
+    @staticmethod
+    def read_from(out_file):
+        handle = open(out_file, "rb")
+        forest = pickle.load(handle)
+        if not isinstance(forest, IsolationForest):
+            raise ValueError("`out_file` must be an IsolationForest model.")
+        return forest
+
+    def predict(self, array):
+        """
+        Given a new user-provided array, generate an anomaly score. Such scores
+        range from 0 to 1; values near 0 are not anomalous, while values near
+        1 would be interesting from an anomaly standpoint.
+
+        Args:
+            array (ndarray): numeric array comprised of N records.
+
+        Returns:
+            DataFrame: Nx2 array where column 1 and 2 is depth and score.
+        """
+        data = pd.DataFrame(array)
+
+        # for keeping track of anomaly scores
+        scores = []
+
+        # generate an anomaly score for each row in the dataset, array
+        for i in range(len(data)):
+
+            # for each record, i, find out its depth in each tree, j
+            depth = 0
+            for j in range(self.num_trees):
+                depth += float(TreeScore(data.values[i], self.trees[j]).path)
+
+            # scale the depth by the total number of trees
+            depth_scaled = depth / self.num_trees
+
+            # output a `score` and `depth` per record
+            score = s(depth_scaled, self.sample_size)
+            scores.append([score, depth_scaled])
+
+        # return anomaly score and depth for each record
+        out = pd.DataFrame(scores,
+                           index=data.index,
+                           columns=["score", "depth"])
+
+        # sort by score so that dissemination can be easier
+        return out.sort_values("score", ascending=False)
+
+    def contrast(self, array, min_score=0.55):
+        """
+        Contrasts features given anomalous and non-anomalous records. This
+        would be helpful when diving into "how come" a record was deemed
+        anomalous.
+
+        Args:
+            array (ndarray): numeric array comprised of N records.
+            min_score (float): score cutoff to classify record as anomalous
+
+        Returns:
+            DataFrame: table showing various values for anomalous records.
+        """
+
+        report = []
+        for frame, name in [(self.X, "History"), (array, "Query")]:
+            preds = self.predict(frame)
+            preds["is anomalous"] = preds["score"] > min_score
+            preds["data format"] = name
+            combined = pd.concat((frame, preds), axis=1)
+            report.append(combined)
+
+        return pd.concat(report).\
+            groupby(["is anomalous", "data format"]).\
+            mean().T
+
+
+class IsolationTree:
+    """
+    An individual component of an `IsolationForest`, hence IsolationTree. An
+    IsolationForest will have many IsolationTree instances, each modeling a
+    subset of the data. Ideally, end-users should not interface with this class
+    directly; much of the work is orchestrated through an IsolationForest.
+
+    Args:
+        data (ndarray): numeric; X records (X = IsolationForest.sample_size)
+        depth (int): the depth of the current object.
+        limit (int): maximum limit of the current object.
+        seed (int): random number generator seed.
+    """
+    def __init__(self, data, depth, limit, seed=None):
+        self.depth = depth  # depth
+        self.data = np.asarray(data)
+        self.num_records = len(data)
+
+        # list of N integers where N is the number of features
+        self.column_positions = np.arange(self.data.shape[1])
+        self.limit = limit  # depth limit
+        self._value = None
+
+        # a column number or position that is selected; from 0 to N
+        self._pos = None
+        self.num_external_nodes = 0
+        self.rng = np.random.RandomState(seed)
+        self.root = self._populate(data, depth, limit)
+
+    def _populate(self, data, depth, l):
+        """
+        Recursively populate the tree; akin to extension of the tree.
+        """
+
+        self.depth = depth
+        if depth >= l or len(data) <= 1:
+            left = None
+            right = None
+            self.num_external_nodes += 1
+
+            # add terminal node (leaf node)
+            return Node(data=data,
+                        size=len(data),
+                        pos=self._pos,
+                        value=self._value,
+                        depth=depth,
+                        left=left,
+                        right=right,
+                        type='external')
+        else:
+
+            # step 1. pick a column number
+            self._pos = self.rng.choice(self.column_positions)  # pick a column
+
+            # step 2. select the minimum and maximum values in said-column
+            min_ = data[:, self._pos].min()  # get min value from the column
+            max_ = data[:, self._pos].max()  # get max value from the column
+            if min_ == max_:
+
+                # if extrema are equal, such nodes lack descendants
+                left = None
+                right = None
+                self.num_external_nodes += 1
+                return Node(data=data,
+                            size=len(data),
+                            pos=self._pos,
+                            value=self._value,
+                            depth=depth,
+                            left=left,
+                            right=right,
+                            type='external')
+
+            # step 3. generate a random number between the min and max range
+            self._value = self.rng.uniform(min_, max_)
+
+            # step 4. determine if values in said-column are less than the value
+            truth = np.where(data[:, self._pos] < self._value, True, False)
+
+            # `left` are where values are less than value, `right` otherwise
+            left = data[truth]
+            right = data[~truth]
+
+            # recursively repeat by propogating the left and right branches
+            return Node(data=data,
+                        size=len(data),
+                        pos=self._pos,
+                        value=self._value,
+                        depth=depth,
+                        left=self._populate(left, depth + 1, l),
+                        right=self._populate(right, depth + 1, l),
+                        type='internal')
+
+
+class TreeScore(object):
+    """
+    A helper-class that is leveraged when executing IsolationForest.predict().
+    This class works by taking a user-provided record, `vector`, and measuring
+    its depth with respect to one of the IsolationTree, `tree`, instances in
+    the forest.
+
+    Args:
+        vector (list): a D-dimensional array.
+        tree (IsolationTree): instance of type IsolationTree.
+    """
+    def __init__(self, vector, tree):
+        self.vector = vector
+        self.depth = 0
+        self.path = self._traverse(tree.root)
+
+    def _traverse(self, node):
+        """
+        Recursively move down the current tree and enumerate its level or depth.
+        When traversal is complete, the depth is quantified given c(...), and
+        will be aggregated with results from other IsolationTree instances.
+
+        Args:
+            node (Node): the current tree node; see `Node` for details.
+        """
+
+        # at the end of recursion, return the number of levels traversed
+        if node.type == 'external':
+            if node.size == 1:
+                return self.depth
+            else:
+                self.depth = self.depth + c(node.size)
+                return self.depth
+        else:
+            attrib = node.pos  # the attribute
+            self.depth += 1  # increment the level
+
+            # if value is less than the nodes value, go left
+            if self.vector[attrib] < node.value:
+                return self._traverse(node.left)
+
+            # if value is greater than the nodes value, go right
+            else:
+                return self._traverse(node.right)
