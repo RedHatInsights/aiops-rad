@@ -26,6 +26,48 @@ from collections import namedtuple
 __version__ = "0.8.2"
 
 
+# for modeling IsolationForest node instances
+Node = namedtuple("Node",
+                  ['data', 'size', 'pos', 'value', 'depth', 'left', 'right',
+                   'type'])
+
+
+def c(n):
+    """
+    The average length of an unsuccessful binary search query. Note that this
+    function is the same as Equation 1 of Isolation Forest manuscript.
+
+    Args:
+        n (int): number of records; same as `sample_size` in `IsolationForest`
+
+    Returns:
+        average length of an unsuccessful binary search query.
+    """
+    euler_constant = 0.5772156649
+    h = np.log(n-1) + euler_constant  # Harmonic number
+    return 2.*h - (2.*(n-1)/n)
+
+
+def s(x, n):
+    """
+    Compute the anomaly score, s. Note that this function is the same as
+    Equation 2 of the Isolation Forest manuscript. Such values range between
+    0 to 1; those near 0 are deemed "normal", while values near 1 are deemed
+    "anomalous". Generally, values > 0.5 are viable anomalous candidates.
+    Along these lines, we assert that the smaller `x` is, aka. shorter path,
+    the more anomalous. In contrast, the larger `x` is, the longer the path
+    since said-record needs more partitions to isolate it on its own.
+
+    Args:
+        x (float): scaled depth; equals cumulative depth of data / num_trees
+        n (int): number of records; same as `sample_size` in `IsolationForest`
+
+    Returns:
+        anomaly score between 0 and 1.
+    """
+    return 2.0 ** (-x / c(n))
+
+
 def fetch_s3(bucket, profile_name=None, folder=None, date=None,
              endpoint=None, workers=None):
     """
