@@ -242,7 +242,7 @@ def preprocess(frame, index=None, drop=None):
     """
 
     # copy the frame so the original is not overwritten
-    df = pd.DataFrame(frame)
+    df = pd.DataFrame(frame).fillna(-1)
 
     try:
         # set the index to be something that identifies each row
