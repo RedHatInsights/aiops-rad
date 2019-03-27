@@ -231,3 +231,42 @@ def preprocess(frame, index=None, drop=None):
     except KeyError:
         logging.error("`index` or `drop` must exist as columns.")
         return pd.DataFrame(), {}
+
+
+def preprocess_on(frame, on, min_records=50, index=None, drop=None):
+    """
+    Similar to `preprocess` but groups records in the DataFrame on a group pf
+    features. Each respective chunk or block is then added to a list; analogous
+    to running `preprocess` on a desired subset of a DataFrame.
+
+    Args:
+        frame (DataFrame): pandas DataFrame
+        on (str or list): features in `frame` you wish to group around.
+        min_records (int): minimum number of rows each grouped chunk must have.
+        index (str or list): columns to serve as DataFrame index.
+        drop (str or list): columns to drop from the DataFrame.
+
+    Returns:
+         DataFrame and dict: processed DataFrame and encodings of its columns.
+    """
+    try:
+        # data, mapping = preprocess(frame, index=index, drop=drop)
+
+        data = pd.DataFrame(frame)
+        out = []
+
+        # group-by `on` and return the chunks which satisfy minimum length
+        for _, chunk in data.groupby(on):
+            if len(chunk) > min_records:
+
+                # if only `on` is provided, set this as the index
+                if index is None and on is not None:
+                    index = on
+
+                # run `preprocess` on each chunk
+                chunk, mapping = preprocess(chunk, index=index, drop=drop)
+                out.append((chunk, mapping))
+        return out
+
+    except KeyError:
+        logging.error("`on` must exist in either index-name or column(s).")
