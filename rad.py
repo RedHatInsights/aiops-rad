@@ -1,6 +1,6 @@
 """
 Red Hat Anomaly Detection, or RAD, is a python module for performing various
-anomaly detection tasks in-support of the AI-ops effort. RAD leverages the
+anomaly detection tasks in-support of the AI-Ops effort. RAD leverages the
 Isolation Forest (IF) ensemble data-structure; a class that partitions a
 data-set and leverages such slicing to gauge magnitude of anomaly. In other
 words, the more partitions, the more "normal" the record.
