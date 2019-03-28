@@ -331,7 +331,8 @@ class IsolationForest:
         limit (int): maximum tree depth.
         seed (int): random number generator seed.
     """
-    def __init__(self, array, num_trees, sample_size, limit=None, seed=None):
+    def __init__(self, array, num_trees=150, sample_size=30, limit=None,
+                 seed=None):
         self.num_trees = num_trees
         self.X = pd.DataFrame(array)
         self.num_records = len(array)
@@ -357,51 +358,68 @@ class IsolationForest:
             self.trees.append(IsolationTree(subset, 0, self.limit, seed=seed))
 
     @staticmethod
-    def save_to(forest, out_file=None):
+    def dump(forest, out_file):
         """
-        Persist an IsolationForest instance as either a python pickle object
-        or a byte-stream. If `out_file` is not provided, the forest instance
-        will be returned as a byte-stream.
+        Persist an IsolationForest instance as either a python pickle object.
 
         Args:
             forest (IsolationForest): IsolationForest instance.
             out_file (str): output filename.
-
-        Returns:
-            bytes if `out_file` is set to None.
         """
         if not isinstance(forest, IsolationForest):
-            raise ValueError("`forest` must be an IsolationForest instance.")
-        if out_file:
-            with open(out_file, "wb") as handle:
-                pickle.dump(forest, handle, protocol=-1)
-        else:
-            return pickle.dumps(forest, protocol=-1)
+            raise ValueError("`forest` must be IsolationForest.")
+        with open(out_file, "wb") as handle:
+            pickle.dump(forest, handle, protocol=-1)
 
     @staticmethod
-    def read_from(out_file_or_stream):
+    def dumps(forest):
         """
-        Read-in a persisted IsolationForest instance. Such persistence models
-        the object as either a python pickle object or a byte-stream.
+        Persist an IsolationForest instance as either a Python byte-stream.
 
         Args:
-            out_file_or_stream (pickle or byte): persisted IsolationForest.
+            forest (IsolationForest): IsolationForest instance.
+
+        Returns:
+            byte-stream modeling an IsolationForest instance.
+        """
+        if not isinstance(forest, IsolationForest):
+            raise ValueError("`forest` must be IsolationForest.")
+        return pickle.dumps(forest, protocol=-1)
+
+    @staticmethod
+    def load(out_file):
+        """
+        Read-in a persisted IsolationForest instance. Such persistence models
+        the object as a Python pickle object.
+
+        Args:
+            out_file (pickle): persisted IsolationForest.
 
         Returns:
             an IsolationForest instance.
         """
-        forest = None
-        try:
-            with open(out_file_or_stream, "rb") as handle:
-                forest = pickle.load(handle)
-        except ValueError:
-            forest = pickle.loads(out_file_or_stream)
-        except (FileNotFoundError, TypeError):
-            pass
-        finally:
+        with open(out_file, "rb") as handle:
+            forest = pickle.load(handle)
             if not isinstance(forest, IsolationForest):
-                raise ValueError("Argument must model an IsolationForest")
+                raise ValueError("`forest` must be IsolationForest.")
             return forest
+
+    @staticmethod
+    def loads(stream):
+        """
+        Read-in a persisted IsolationForest instance. Such persistence models
+        the object as a Python byte-stream.
+
+        Args:
+            stream (bytes): byte-stream representation of an IsolationForest.
+
+        Returns:
+            an IsolationForest instance.
+        """
+        forest = pickle.loads(stream)
+        if not isinstance(forest, IsolationForest):
+            raise ValueError("Argument must model an IsolationForest")
+        return forest
 
     def predict(self, array):
         """
