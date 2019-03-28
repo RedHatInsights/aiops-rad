@@ -43,8 +43,10 @@ def c(n):
     Returns:
         average length of an unsuccessful binary search query.
     """
+    if n <= 0:
+        raise ValueError("`n` must be positive; length cannot be negative.")
     euler_constant = 0.5772156649
-    h = np.log(n-1) + euler_constant  # Harmonic number
+    h = np.log(n) + euler_constant  # Harmonic number
     return 2.*h - (2.*(n-1)/n)
 
 
@@ -226,7 +228,7 @@ def inventory_data_to_pandas(dic):
     return frame.drop([np.nan], axis=1)
 
 
-def preprocess(frame, index=None, drop=None):
+def preprocess(frame, index=None, drop=None, fill_value=-1):
     """
     Performs important DataFrame pre-processing so that indices can be set,
     columns can be dropped, or non-numeric columns be encoded as their
@@ -242,7 +244,7 @@ def preprocess(frame, index=None, drop=None):
     """
 
     # copy the frame so the original is not overwritten
-    df = pd.DataFrame(frame).fillna(-1)
+    df = pd.DataFrame(frame).fillna(fill_value)
 
     try:
         # set the index to be something that identifies each row
@@ -275,7 +277,8 @@ def preprocess(frame, index=None, drop=None):
         return pd.DataFrame(), {}
 
 
-def preprocess_on(frame, on, min_records=50, index=None, drop=None):
+def preprocess_on(frame, on, min_records=50, index=None, drop=None,
+                  fill_value=-1):
     """
     Similar to `preprocess` but groups records in the DataFrame on a group pf
     features. Each respective chunk or block is then added to a list; analogous
@@ -306,7 +309,8 @@ def preprocess_on(frame, on, min_records=50, index=None, drop=None):
                     index = on
 
                 # run `preprocess` on each chunk
-                chunk, mapping = preprocess(chunk, index=index, drop=drop)
+                chunk, mapping = preprocess(chunk, index=index, drop=drop,
+                                            fill_value=fill_value)
                 out.append((chunk, mapping))
         return out
 
