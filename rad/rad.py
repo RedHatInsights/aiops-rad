@@ -246,35 +246,31 @@ def preprocess(frame, index=None, drop=None, fill_value=-1):
     # copy the frame so the original is not overwritten
     df = pd.DataFrame(frame).fillna(fill_value)
 
-    try:
-        # set the index to be something that identifies each row
-        if index is not None:
-            df.set_index(index, inplace=True)
+    # set the index to be something that identifies each row
+    if index is not None:
+        df.set_index(index, inplace=True)
 
-        # drop some spurious columns, i.e. `upload_time`
-        if drop is not None:
-            df.drop(drop, axis=1, inplace=True)
+    # drop some spurious columns, i.e. `upload_time`
+    if drop is not None:
+        df.drop(drop, axis=1, inplace=True)
 
-        # encode non-numeric columns as integer; datetimes are not `object`
-        mappings = {}
-        for column in df.select_dtypes(include=(object, bool)):
+    # encode non-numeric columns as integer; datetimes are not `object`
+    mappings = {}
+    for column in df.select_dtypes(include=(object, bool)):
 
-            # convert the non-numeric column as categorical and overwrite column
-            category = df[column].astype("category")
-            df[column] = category.cat.codes.astype(float)
+        # convert the non-numeric column as categorical and overwrite column
+        category = df[column].astype("category")
+        df[column] = category.cat.codes.astype(float)
 
-            # column categories and add mapping, i.e. "A" => 1, "B" => 2, etc.
-            cats = category.cat.categories
-            mappings[column] = dict(zip(cats, range(len(cats))))
+        # column categories and add mapping, i.e. "A" => 1, "B" => 2, etc.
+        cats = category.cat.categories
+        mappings[column] = dict(zip(cats, range(len(cats))))
 
-        # remove all remaining columns, i.e. `datetime`
-        df = df.select_dtypes(include=np.number)
+    # remove all remaining columns, i.e. `datetime`
+    df = df.select_dtypes(include=np.number)
 
-        # return the DataFrame and categorical mappings
-        return df, mappings
-    except KeyError:
-        logging.error("`index` or `drop` must exist as columns.")
-        return pd.DataFrame(), {}
+    # return the DataFrame and categorical mappings
+    return df, mappings
 
 
 def preprocess_on(frame, on, min_records=50, index=None, drop=None,
@@ -294,28 +290,23 @@ def preprocess_on(frame, on, min_records=50, index=None, drop=None,
     Returns:
          DataFrame and dict: processed DataFrame and encodings of its columns.
     """
-    try:
-        # data, mapping = preprocess(frame, index=index, drop=drop)
 
-        data = pd.DataFrame(frame)
-        out = []
+    data = pd.DataFrame(frame)
+    out = []
 
-        # group-by `on` and return the chunks which satisfy minimum length
-        for _, chunk in data.groupby(on):
-            if len(chunk) > min_records:
+    # group-by `on` and return the chunks which satisfy minimum length
+    for _, chunk in data.groupby(on):
+        if len(chunk) > min_records:
 
-                # if only `on` is provided, set this as the index
-                if index is None and on is not None:
-                    index = on
+            # if only `on` is provided, set this as the index
+            if index is None and on is not None:
+                index = on
 
-                # run `preprocess` on each chunk
-                chunk, mapping = preprocess(chunk, index=index, drop=drop,
-                                            fill_value=fill_value)
-                out.append((chunk, mapping))
-        return out
-
-    except KeyError:
-        logging.error("`on` must exist in either index-name or column(s).")
+            # run `preprocess` on each chunk
+            chunk, mapping = preprocess(chunk, index=index, drop=drop,
+                                        fill_value=fill_value)
+            out.append((chunk, mapping))
+    return out
 
 
 class IsolationForest:
