@@ -1,6 +1,8 @@
 import unittest
 import numpy as np
 import pandas as pd
+from rad.rad import IsolationForest
+
 from rad import rad
 
 
@@ -95,25 +97,65 @@ class TestPreprocess(unittest.TestCase):
         frame, mapping = rad.preprocess(self.frame, index=column)
         self.assertEqual(frame.index.name, column)
 
-    # def test_preprocess_on_output_equals_num_groups(self):
-    #     """
-    #     Test that the number of chunks from `preprocess_on` equals the number
-    #     of groups, i.e. ["A", "B", "C", ...]
-    #     """
-    #     index = np.random.choice(["A", "B", "C"], len(self.frame))
-    #     self.frame["index"] = index
-    #     chunks = rad.preprocess_on(self.frame, on="index", min_records=0)
-    #     self.assertEqual(len(chunks), len(np.unique(index)))
-    #
-    # def test_preprocess_on_group_must_exist(self):
-    #     index = np.random.choice(["A", "B"], len(self.frame))
-    #     self.frame["index"] = index
-    #
-    #     print(["index"] in self.frame.columns)
 
-        # print(rad.preprocess(self.frame, index=["a"]))
-        # self.assertRaises(KeyError, rad.preprocess_on, frame=self.frame, on="not in")
-        # self.assertRaises(KeyError, rad.preprocess_on, self.frame, "onnn")
+class TestPreprocessOn(unittest.TestCase):
+
+    def setUp(self):
+        size = np.random.randint(1, 100, size=2)
+        data = np.random.randint(-100000, 100000, size)
+        self.frame = pd.DataFrame(data)
+        self.frame["groups"] = np.random.choice(["a", "b"], len(self.frame))
+
+    def test_preprocess_on_output_equals_num_groups(self):
+        """
+        Test that the number of chunks from `preprocess_on` equals the number
+        of groups, i.e. ["A", "B", "C", ...]
+        """
+        uniq_groups = np.unique(self.frame["groups"])
+        chunks = rad.preprocess_on(self.frame, on="groups", min_records=0)
+        self.assertEqual(len(chunks), len(uniq_groups))
+
+    def test_preprocess_on_group_must_exist(self):
+        """
+        Test that an invalid column set for `on` raises KeyError exception
+        """
+        self.assertRaises(KeyError, rad.preprocess_on, self.frame, "bad column")
+
+
+class TestIsolationForest(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        """
+        Building an IsolationForest *can* be expensive, so do it only once
+        """
+        size = np.random.randint(10, 100, size=2)
+        data = np.random.randint(0, 10000, size=size)
+        cls.forest = IsolationForest(data)
+
+    def test_correct_number_of_trees_made(self):
+        """
+        Test that if N trees are desired, N trees shall be made
+        """
+        self.assertEqual(self.forest.num_trees, len(self.forest.trees))
+
+    def test_predict_length_equals_input_length(self):
+        """
+        Test that each input record has a corresponding prediction
+        """
+        num_rows = np.random.randint(1, 100)
+        data = np.random.randint(0, 10000, (num_rows, self.forest.X.shape[1]))
+        out = self.forest.predict(data)
+        self.assertEqual(len(out), len(data))
+
+    def test_columns_are_in_contrast(self):
+        """
+        Test that `contrast` requires same number of columns as for training
+        """
+        columns = self.forest.X.columns
+        new_data = np.random.randint(0, 10000, (100, self.forest.X.shape[1]))
+        contrast = self.forest.contrast(new_data)
+        self.assertEqual(len(contrast.loc[columns]), self.forest.X.shape[1])
 
 
 if __name__ == '__main__':

@@ -475,7 +475,7 @@ class IsolationForest:
             preds = self.predict(frame)
             preds["is anomalous"] = preds["score"] > min_score
             preds["data format"] = name
-            combined = pd.concat((frame, preds), axis=1)
+            combined = pd.concat((pd.DataFrame(frame), preds), axis=1)
             report.append(combined)
 
         return pd.concat(report).\
