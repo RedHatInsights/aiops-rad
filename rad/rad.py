@@ -164,13 +164,14 @@ def inventory_data_to_pandas(dic):
         if "account" not in result:
             raise IOError("JSON must contain `account` key under `results`")
 
-        # get some preliminary data
+        # get some preliminary data; `id` is unique, `display_name` is not
         data = result["facts"]
-        ix = result["display_name"]
+        ix = result["id"]
+        display = result["display_name"]
 
         # identify systems which lack data
         if len(data) == 0:
-            lacks_data.append(ix)
+            lacks_data.append({'ix': (display, ix)})
             continue
 
         # data looks like this:
@@ -190,52 +191,50 @@ def inventory_data_to_pandas(dic):
                 # handling numeric values
                 if isinstance(v, (int, bool)):
                     v = float(v)
-                    rows.append({"ix": ix, "value": v, "col": k})
+                    rows.append({"ix": (display, ix),
+                                 "value": v,
+                                 "col": k})
 
                 # if a collection, each collection item is its own feature
                 elif isinstance(v, (list, tuple)):
                     for v_ in v:
-                        rows.append({"ix": ix,
+                        rows.append({"ix": (display, ix),
                                      "value": True,
                                      "col": "{}|{}".format(k, v_)})
 
                 # handling strings is trivial
                 elif isinstance(v, str):
-                    rows.append({"ix": ix,
+                    rows.append({"ix": (display, ix),
                                  "value": v,
                                  "col": k})
 
                 # sometimes, values are `dict`, so handle accordingly
                 elif isinstance(v, dict):
                     for k_, v_ in v.items():
-                        rows.append({"ix": ix,
+                        rows.append({"ix": (display, ix),
                                      "value": v_,
                                      "col": "{}".format(k_)})
 
                 # end-case; useful if value is None or NaN
                 else:
-                    rows.append({"ix": ix, "value": -1, "col": k})
+                    rows.append({"ix": (display, ix),
+                                 "value": -1,
+                                 "col": k})
 
     # take all the newly-added data and make it into a DataFrame
-    frame = pd.DataFrame(rows).drop_duplicates()
+    frame = pd.DataFrame(rows)
 
-    # count how many times each row, ix, and column, col, are found
-    counts = frame.groupby(["ix", "col"]).count()
-
-    # ideally, each row and column should be found once, so select such rows
-    dup_records = counts[counts["value"] == 1]
-    frame = frame.set_index(["ix", "col"]).loc[dup_records.index].reset_index()
-
-    # add all the data that lack values
-    for id_ in lacks_data:
-        frame = frame.append(pd.Series({"ix": id_}), ignore_index=True)
+    # # add all the data that lack values
+    for ld in lacks_data:
+        frame = frame.append(pd.Series({"ix": ld["ix"]}),
+                             ignore_index=True)
 
     # pivot the data so each row is an index and each feature is a column
     frame = frame.pivot(index="ix", columns="col", values="value")
-    try:
-        return frame.drop([np.nan], axis=1)
-    except KeyError:
-        return frame
+
+    # each index is the `display_name` and `id`; this combination is unique
+    frame.index = pd.MultiIndex.from_tuples(tuple(frame.index))
+    return frame
 
 
 def preprocess(frame, index=None, drop=None, fill_value=-1):
@@ -485,7 +484,8 @@ class IsolationForest:
             preds = self.predict(frame)
             preds["is anomalous"] = preds["score"] > min_score
             preds["data format"] = name
-            combined = pd.concat((pd.DataFrame(frame), preds), axis=1)
+            combined = pd.concat((pd.DataFrame(frame), preds),
+                                 axis=1, sort=False)
             report.append(combined)
 
         return pd.concat(report).\
