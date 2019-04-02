@@ -198,6 +198,9 @@ def inventory_data_to_pandas(dic):
                 # if a collection, each collection item is its own feature
                 elif isinstance(v, (list, tuple)):
                     for v_ in v:
+                        # some larger `v_` instances are collections; ignore
+                        if isinstance(v_, (dict, list)):
+                            continue
                         rows.append({"ix": (display, ix),
                                      "value": True,
                                      "col": "{}|{}".format(k, v_)})
@@ -211,6 +214,9 @@ def inventory_data_to_pandas(dic):
                 # sometimes, values are `dict`, so handle accordingly
                 elif isinstance(v, dict):
                     for k_, v_ in v.items():
+                        # some larger `v_` instances are collections; ignore
+                        if isinstance(v_, (dict, list)):
+                            continue
                         rows.append({"ix": (display, ix),
                                      "value": v_,
                                      "col": "{}".format(k_)})
@@ -222,9 +228,9 @@ def inventory_data_to_pandas(dic):
                                  "col": k})
 
     # take all the newly-added data and make it into a DataFrame
-    frame = pd.DataFrame(rows)
+    frame = pd.DataFrame(rows).drop_duplicates()
 
-    # # add all the data that lack values
+    # add all the data that lack values
     for ld in lacks_data:
         frame = frame.append(pd.Series({"ix": ld["ix"]}),
                              ignore_index=True)
@@ -234,6 +240,10 @@ def inventory_data_to_pandas(dic):
 
     # each index is the `display_name` and `id`; this combination is unique
     frame.index = pd.MultiIndex.from_tuples(tuple(frame.index))
+
+    # if you have IDs which lack data, such IDs add an NaN column; remove this
+    if len(lacks_data) > 0:
+        frame.drop([np.nan], axis=1, inplace=True)
     return frame
 
 
