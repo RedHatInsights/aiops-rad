@@ -436,7 +436,7 @@ class IsolationForest:
             raise ValueError("Argument must model an IsolationForest")
         return forest
 
-    def predict(self, array, as_json=True):
+    def predict(self, array, as_json=False):
         """
         Given a new user-provided array, generate an anomaly score. Such scores
         range from 0 to 1; values near 0 are not anomalous, while values near
