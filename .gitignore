@@ -1,1 +1,10 @@
+# Setup.py
+.eggs
+*.egg-info
+build
+dist
+
+# Pytest
 *.xml
+.pytest_cache
+.coverage
