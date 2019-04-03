@@ -10,6 +10,7 @@ Much of the algorithms in this module are from the works of Liu et al.
 
 
 import os
+import json
 import s3fs
 import pickle
 import urllib3
@@ -435,7 +436,7 @@ class IsolationForest:
             raise ValueError("Argument must model an IsolationForest")
         return forest
 
-    def predict(self, array):
+    def predict(self, array, as_json=True):
         """
         Given a new user-provided array, generate an anomaly score. Such scores
         range from 0 to 1; values near 0 are not anomalous, while values near
@@ -471,6 +472,16 @@ class IsolationForest:
         out = pd.DataFrame(scores,
                            index=data.index,
                            columns=["score", "depth"])
+
+        # if JSON is sought, return as JSON
+        if as_json:
+            arr = []
+            for ix, row in out.iterrows():
+                # convert the current record and append its index
+                dic = dict(row)
+                dic["id"] = ix
+                arr.append(dic)
+            return json.dumps(arr)
 
         # sort by score so that dissemination can be easier
         return out.sort_values("score", ascending=False)
