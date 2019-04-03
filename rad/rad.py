@@ -509,6 +509,7 @@ class IsolationTree:
         # a column number or position that is selected; from 0 to N
         self._pos = None
         self.num_external_nodes = 0
+        self.num_internal_nodes = 0
         self.rng = np.random.RandomState(seed)
         self.root = self._populate(data, depth, limit)
 
@@ -566,6 +567,7 @@ class IsolationTree:
             right = data[~truth]
 
             # recursively repeat by propogating the left and right branches
+            self.num_internal_nodes += 1
             return Node(data=data,
                         size=len(data),
                         pos=self._pos,

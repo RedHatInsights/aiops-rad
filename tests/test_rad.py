@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 import pandas as pd
-from rad.rad import IsolationForest
+from rad.rad import IsolationForest, IsolationTree
 
 from rad import rad
 
@@ -156,6 +156,32 @@ class TestIsolationForest(unittest.TestCase):
         new_data = np.random.randint(0, 10000, (100, self.forest.X.shape[1]))
         contrast = self.forest.contrast(new_data)
         self.assertEqual(len(contrast.loc[columns]), self.forest.X.shape[1])
+
+
+class TestIsolationTree(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        """
+        Building an IsolationTree is less expensive than forest, but do it once
+        """
+        size = np.random.randint(10, 50, size=2)
+        data = np.random.randint(0, 10000, size=size)
+        cls.tree = IsolationTree(data, depth=1, limit=10)
+
+    def test_tree_built_some_nodes(self):
+        """
+        Test that an IsolationTree has a positive number of nodes
+        """
+        num_nodes = self.tree.num_internal_nodes + self.tree.num_external_nodes
+        self.assertTrue(num_nodes > 0)
+
+    def test_random_value_in_column(self):
+        """
+        Test that given a column, q, a random number, p, falls within its range.
+        """
+        column = self.tree.data[:, self.tree._pos]
+        self.assertTrue(min(column) <= self.tree._value <= max(column))
 
 
 if __name__ == '__main__':
