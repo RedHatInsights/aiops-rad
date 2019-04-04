@@ -23,7 +23,7 @@ from requests.auth import HTTPBasicAuth
 from collections import namedtuple
 
 
-__version__ = "0.8.3"
+__version__ = "0.9"
 
 
 # for modeling IsolationForest node instances
@@ -172,7 +172,8 @@ def inventory_data_to_pandas(dic):
 
         # identify systems which lack data
         if len(data) == 0:
-            lacks_data.append({'ix': (display, ix)})
+            lacks_data.append({'id': ix,
+                               "display_name": display})
             continue
 
         # data looks like this:
@@ -192,7 +193,8 @@ def inventory_data_to_pandas(dic):
                 # handling numeric values
                 if isinstance(v, (int, bool)):
                     v = float(v)
-                    rows.append({"ix": (display, ix),
+                    rows.append({"id": ix,
+                                 "display_name": display,
                                  "value": v,
                                  "col": k})
 
@@ -202,13 +204,15 @@ def inventory_data_to_pandas(dic):
                         # some larger `v_` instances are collections; ignore
                         if isinstance(v_, (dict, list)):
                             continue
-                        rows.append({"ix": (display, ix),
+                        rows.append({"id": ix,
+                                     "display_name": display,
                                      "value": True,
                                      "col": "{}|{}".format(k, v_)})
 
                 # handling strings is trivial
                 elif isinstance(v, str):
-                    rows.append({"ix": (display, ix),
+                    rows.append({"id": ix,
+                                 "display_name": display,
                                  "value": v,
                                  "col": k})
 
@@ -218,37 +222,35 @@ def inventory_data_to_pandas(dic):
                         # some larger `v_` instances are collections; ignore
                         if isinstance(v_, (dict, list)):
                             continue
-                        rows.append({"ix": (display, ix),
+                        rows.append({"id": ix,
+                                     "display_name": display,
                                      "value": v_,
                                      "col": "{}".format(k_)})
 
                 # end-case; useful if value is None or NaN
                 else:
-                    rows.append({"ix": (display, ix),
+                    rows.append({"id": ix,
+                                 "display_name": display,
                                  "value": -1,
                                  "col": k})
 
     # take all the newly-added data and make it into a DataFrame
-    frame = pd.DataFrame(rows).drop_duplicates()
+    frame = pd.DataFrame(rows)
 
-    # add all the data that lack values
-    for ld in lacks_data:
-        frame = frame.append(pd.Series({"ix": ld["ix"]}),
-                             ignore_index=True)
+    # add all the records which do not have any features; lacking data
+    frame_lacks = pd.DataFrame(lacks_data)
+    frame = pd.concat((frame, frame_lacks), ignore_index=True, sort=True)
 
-    # pivot the data so each row is an index and each feature is a column
-    frame = frame.pivot(index="ix", columns="col", values="value")
-
-    # each index is the `display_name` and `id`; this combination is unique
-    frame.index = pd.MultiIndex.from_tuples(tuple(frame.index))
-
-    # if you have IDs which lack data, such IDs add an NaN column; remove this
-    if len(lacks_data) > 0:
-        frame.drop([np.nan], axis=1, inplace=True)
+    # pivot the data and set `display_name` and `id` as its columns
+    frame = pd.pivot_table(frame,
+                           values="value",
+                           index=["display_name", "id"],
+                           columns="col",
+                           aggfunc="first")
     return frame
 
 
-def preprocess(frame, index=None, drop=None, fill_value=-1):
+def preprocess(frame, index=None, drop=None):
     """
     Performs important DataFrame pre-processing so that indices can be set,
     columns can be dropped, or non-numeric columns be encoded as their
@@ -264,7 +266,7 @@ def preprocess(frame, index=None, drop=None, fill_value=-1):
     """
 
     # copy the frame so the original is not overwritten
-    df = pd.DataFrame(frame).fillna(fill_value)
+    df = pd.DataFrame(frame).fillna(0)
 
     # set the index to be something that identifies each row
     if index is not None:
@@ -306,12 +308,13 @@ def preprocess_on(frame, on, min_records=50, index=None, drop=None,
         min_records (int): minimum number of rows each grouped chunk must have.
         index (str or list): columns to serve as DataFrame index.
         drop (str or list): columns to drop from the DataFrame.
+        fill_value (int): fill-value for all NaN or None values.
 
     Returns:
          DataFrame and dict: processed DataFrame and encodings of its columns.
     """
 
-    data = pd.DataFrame(frame)
+    data, mapping = preprocess(frame, index, drop)
     out = []
 
     # group-by `on` and return the chunks which satisfy minimum length
@@ -321,10 +324,6 @@ def preprocess_on(frame, on, min_records=50, index=None, drop=None,
             # if only `on` is provided, set this as the index
             if index is None and on is not None:
                 index = on
-
-            # run `preprocess` on each chunk
-            chunk, mapping = preprocess(chunk, index=index, drop=drop,
-                                        fill_value=fill_value)
             out.append((chunk, mapping))
     return out
 
@@ -349,7 +348,9 @@ class IsolationForest:
     def __init__(self, array, num_trees=150, sample_size=30, limit=None,
                  seed=None):
         self.num_trees = num_trees
-        self.X = pd.DataFrame(array)
+        table, mapping = preprocess(array)
+        self.X = table
+        self.mapping = mapping
         self.num_records = len(array)
         self.sample_size = sample_size
         self.trees = []
@@ -436,7 +437,7 @@ class IsolationForest:
             raise ValueError("Argument must model an IsolationForest")
         return forest
 
-    def predict(self, array, as_json=False):
+    def predict(self, array):
         """
         Given a new user-provided array, generate an anomaly score. Such scores
         range from 0 to 1; values near 0 are not anomalous, while values near
@@ -446,47 +447,48 @@ class IsolationForest:
             array (ndarray): numeric array comprised of N records.
 
         Returns:
-            DataFrame: Nx2 array where column 1 and 2 is depth and score.
+            str: JSON representation modeling prediction per record.
         """
-        data = pd.DataFrame(array)
+        data, mapping = preprocess(array)
+
+        # if an ndarray or DataFrame lacking index-name is given, set index name
+        if data.index.names == [None]:
+            data.index.names = ["id"]
 
         # for keeping track of anomaly scores
-        scores = []
+        out = []
 
         # generate an anomaly score for each row in the dataset, array
-        for i in range(len(data)):
+        for ix, row in data.iterrows():
 
             # for each record, i, find out its depth in each tree, j
             depth = 0
             for j in range(self.num_trees):
-                depth += float(TreeScore(data.values[i], self.trees[j]).path)
+                depth += float(TreeScore(row.values, self.trees[j]).path)
 
             # scale the depth by the total number of trees
             depth_scaled = depth / self.num_trees
 
             # output a `score` and `depth` per record
             score = s(depth_scaled, self.sample_size)
-            scores.append([score, depth_scaled])
 
-        # return anomaly score and depth for each record
-        out = pd.DataFrame(scores,
-                           index=data.index,
-                           columns=["score", "depth"])
+            # each record (row) has a score and depth
+            record = {"score": score,
+                      "depth": depth_scaled}
 
-        # if JSON is sought, return as JSON
-        if as_json:
-            arr = []
-            for ix, row in out.iterrows():
-                # convert the current record and append its index
-                dic = dict(row)
-                dic["id"] = ix
-                arr.append(dic)
-            return json.dumps(arr)
+            # if the index is a MultiIndex each index name index value
+            if isinstance(ix, (tuple, list)):
+                record.update(zip(data.index.names, ix))
 
-        # sort by score so that dissemination can be easier
-        return out.sort_values("score", ascending=False)
+            # otherwise, the index is just an Index, so map this one name
+            else:
+                record.update({data.index.name: ix})
 
-    def contrast(self, array, min_score=0.55):
+            # create a centralized data-structure to feed into json.dumps(...)
+            out.append(record)
+        return json.dumps(out)
+
+    def contrast(self, array):
         """
         Contrasts features given anomalous and non-anomalous records. This
         would be helpful when diving into "how come" a record was deemed
@@ -494,24 +496,41 @@ class IsolationForest:
 
         Args:
             array (ndarray): numeric array comprised of N records.
-            min_score (float): score cutoff to classify record as anomalous
 
         Returns:
-            DataFrame: table showing various values for anomalous records.
+            str: JSON to help contrast feature abundance per group.
         """
 
-        report = []
-        for frame, name in [(self.X, "History"), (array, "Query")]:
-            preds = self.predict(frame)
-            preds["is anomalous"] = preds["score"] > min_score
-            preds["data format"] = name
-            combined = pd.concat((pd.DataFrame(frame), preds),
-                                 axis=1, sort=False)
-            report.append(combined)
+        def _run_contrast_helper(array, is_training_data=False):
 
-        return pd.concat(report).\
-            groupby(["is anomalous", "data format"]).\
-            mean().T
+            # get predictions and only focus on `score` and `depth`
+            table, _ = preprocess(array)
+            predictions = self.predict(table)
+            frame = pd.read_json(predictions)[["score", "depth"]]
+
+            # given `score`, those greater than .5 is deemed anomalous
+            frame["Is Anomalous"] = frame["score"] > .5
+
+            # get the original DataFrame
+            if is_training_data:
+                X = self.X
+            else:
+                X = table
+
+            # remove the index to make joins with feature aggregates easier
+            X = X.reset_index(drop=True)
+            frame = pd.concat((frame, X), axis=1, sort=False)
+            jsn = frame.groupby("Is Anomalous").mean().to_dict()
+            return jsn
+
+        # get the JSON representation for both training and test data
+        json_history = _run_contrast_helper(self.X, is_training_data=True)
+        json_query = _run_contrast_helper(array, is_training_data=False)
+
+        # dump result of historical (training) and query (testing) data as JSON
+        out = json.dumps({"Historical": json_history,
+                          "Query": json_query})
+        return out
 
 
 class IsolationTree:
