@@ -8,19 +8,29 @@ Much of the algorithms in this module are from the works of Liu et al.
 (https://cs.nju.edu.cn/zhouzh/zhouzh.files/publication/icdm08b.pdf)
 """
 
-
 import os
 import json
 import s3fs
 import pickle
 import urllib3
+import logging
 import requests
 import numpy as np
 import pandas as pd
 
 from pyarrow import parquet
-from requests.auth import HTTPBasicAuth
+from scipy.stats import ks_2samp
 from collections import namedtuple
+from requests.auth import HTTPBasicAuth
+
+
+# for plotting purposes only
+
+try:
+    import matplotlib.pyplot as plt
+    from io import StringIO, BytesIO
+except ImportError:
+    logging.warn("matplotlib not available; plotting not possible.")
 
 
 __version__ = "0.9"
@@ -150,48 +160,52 @@ def inventory_data_to_pandas(dic):
         >>> frame = inventory_data_to_pandas(dic)
     """
 
-    # keep track of systems lacking data; useful for finding anomalous signals
-    lacks_data = []
+    # do some exception handling to make sure the right data is passed-in
+    if isinstance(dic, dict):
+        data = dic.get("results", [])
+    elif isinstance(dic, (list, tuple)):
+        data = dic
+    else:
+        raise TypeError("`dic` must an array or dict with `results` key.")
 
     # list of dictionary items for each and every row
     rows = []
 
-    # iterate over all records; all data resides under the `results` key
-    for result in dic["results"]:
+    # # iterate over all records; all data resides under the `results` key
+    for record in data:
 
         # assert that `facts` and `account` are keys, otherwise throw error
-        if "facts" not in result:
+        if "facts" not in record:
             raise IOError("JSON must contain `facts` key under `results`")
-        if "account" not in result:
+        if "account" not in record:
             raise IOError("JSON must contain `account` key under `results`")
 
         # get some preliminary data; `id` is unique, `display_name` is not
-        data = result["facts"]
-        ix = result["id"]
-        display = result["display_name"]
+        facts = record["facts"]
+        ix = str(record["id"])
+        display = str(record["display_name"])
 
-        # identify systems which lack data
-        if len(data) == 0:
-            lacks_data.append({'id': ix,
-                               "display_name": display})
+        # systems lacking data lack column, so you measuring such will be tough
+        if len(facts) == 0:
             continue
 
         # data looks like this:
-        # [{'facts': {'fqdn': 'eeeg.lobatolan.home'}, 'namespace': 'inventory'}]
+        # [{'facts': {'fqdn': '...'}, 'namespace': '...'}]
 
-        # iterate over all the elements in the list; usually gets one element
-        for dic in data:
-            if not isinstance(dic, dict):
-                raise IOError("Data elements must be dict")
+        # iterate over all the elements in `facts`
+        for fact in facts:
+            if not isinstance(fact, dict):
+                msg = "`facts` must dict, i.e. {'facts': {'fqdn': '...'}}"
+                raise IOError(msg)
 
-            if "facts" not in dic:
+            if "facts" not in fact:
                 raise KeyError("`facts` key must reside in the dictionary")
 
-            # iterate over all the key-value pairs
-            for k, v in dic["facts"].items():
+            # iterate over all the key-value pairs for each `facts` item
+            for k, v in fact["facts"].items():
 
                 # handling numeric values
-                if isinstance(v, (int, bool)):
+                if isinstance(v, (int, float, bool)):
                     v = float(v)
                     rows.append({"id": ix,
                                  "display_name": display,
@@ -225,9 +239,9 @@ def inventory_data_to_pandas(dic):
                         rows.append({"id": ix,
                                      "display_name": display,
                                      "value": v_,
-                                     "col": "{}".format(k_)})
+                                     "col": k_})
 
-                # end-case; useful if value is None or NaN
+                # end-case; useful if key has column but its value is NaN / None
                 else:
                     rows.append({"id": ix,
                                  "display_name": display,
@@ -236,10 +250,6 @@ def inventory_data_to_pandas(dic):
 
     # take all the newly-added data and make it into a DataFrame
     frame = pd.DataFrame(rows)
-
-    # add all the records which do not have any features; lacking data
-    frame_lacks = pd.DataFrame(lacks_data)
-    frame = pd.concat((frame, frame_lacks), ignore_index=True, sort=True)
 
     # pivot the data and set `display_name` and `id` as its columns
     frame = pd.pivot_table(frame,
@@ -295,8 +305,7 @@ def preprocess(frame, index=None, drop=None):
     return df, mappings
 
 
-def preprocess_on(frame, on, min_records=50, index=None, drop=None,
-                  fill_value=-1):
+def preprocess_on(frame, on, min_records=50, index=None, drop=None):
     """
     Similar to `preprocess` but groups records in the DataFrame on a group pf
     features. Each respective chunk or block is then added to a list; analogous
@@ -308,7 +317,6 @@ def preprocess_on(frame, on, min_records=50, index=None, drop=None,
         min_records (int): minimum number of rows each grouped chunk must have.
         index (str or list): columns to serve as DataFrame index.
         drop (str or list): columns to drop from the DataFrame.
-        fill_value (int): fill-value for all NaN or None values.
 
     Returns:
          DataFrame and dict: processed DataFrame and encodings of its columns.
@@ -488,7 +496,39 @@ class IsolationForest:
             out.append(record)
         return json.dumps(out)
 
-    def contrast(self, array):
+    def to_report(self, out_pdf, predict=None):
+
+        # determine if predictions have been added beforehand
+        if predict is None:
+            frame = pd.read_json(self.predict(self.X.values))
+        else:
+            frame = pd.DataFrame.from_records(json.loads(predict))
+
+        # determine those deemed anomalous from normal
+        frame["Is Anomalous"] = frame["score"] >= .5
+        normal = frame[~frame["Is Anomalous"]]["score"]
+        anomalies = frame[frame["Is Anomalous"]]["score"]
+
+        # represent some sub-plots
+        fig, ax = plt.subplots(1, 2)
+
+        # figure 1 - a boxplot of anomaly score distributions
+        ax[0].boxplot([normal.values, anomalies.values],
+                      showfliers=True,
+                      showmeans=True)
+        ax[0].set_xticklabels(["Normal", "Anomaly"])
+        ax[0].set_xlabel("Group")
+        ax[0].set_ylabel("Anomaly Score")
+
+        # figure 2 - a basic histogram of score distributions
+        ax[1].hist(frame["score"], bins=25)
+        ax[1].set_ylabel("Count")
+        ax[1].set_xlabel("Anomaly Score")
+
+        plt.tight_layout()
+        plt.savefig(out_pdf)
+
+    def contrast(self, alpha=0.01, ks_statistic=0.8):
         """
         Contrasts features given anomalous and non-anomalous records. This
         would be helpful when diving into "how come" a record was deemed
@@ -501,36 +541,32 @@ class IsolationForest:
             str: JSON to help contrast feature abundance per group.
         """
 
-        def _run_contrast_helper(array, is_training_data=False):
+        # determine if predictions have been added beforehand
+        frame = pd.read_json(self.predict(self.X.values))
 
-            # get predictions and only focus on `score` and `depth`
-            table, _ = preprocess(array)
-            predictions = self.predict(table)
-            frame = pd.read_json(predictions)[["score", "depth"]]
+        # fetch only the `score` and `depth`, and determine what is anomalous
+        frame = frame[["score", "depth"]]
+        frame.reset_index(drop=True, inplace=True)
+        frame = pd.concat((frame, self.X.reset_index(drop=True)),
+                          axis=1,
+                          sort=False)
+        frame["Is Anomalous"] = frame["score"] > .5
 
-            # given `score`, those greater than .5 is deemed anomalous
-            frame["Is Anomalous"] = frame["score"] > .5
+        out = []
+        for column in frame:
+            anomalies = frame[column][frame["Is Anomalous"]].values
+            normal = frame[column][~frame["Is Anomalous"]].values
 
-            # get the original DataFrame
-            if is_training_data:
-                X = self.X
-            else:
-                X = table
+            anomalies = np.random.choice(anomalies, size=100).astype(float)
+            normal = np.random.choice(normal, size=1000).astype(float)
 
-            # remove the index to make joins with feature aggregates easier
-            X = X.reset_index(drop=True)
-            frame = pd.concat((frame, X), axis=1, sort=False)
-            jsn = frame.groupby("Is Anomalous").mean().to_dict()
-            return jsn
+            ks2_out = ks_2samp(anomalies, normal)
+            if ks2_out.pvalue <= alpha and ks2_out.statistic >= ks_statistic:
+                out.append({"column": column,
+                            "H": ks2_out.statistic,
+                            "pvalue": ks2_out.pvalue})
 
-        # get the JSON representation for both training and test data
-        json_history = _run_contrast_helper(self.X, is_training_data=True)
-        json_query = _run_contrast_helper(array, is_training_data=False)
-
-        # dump result of historical (training) and query (testing) data as JSON
-        out = json.dumps({"Historical": json_history,
-                          "Query": json_query})
-        return out
+        return json.dumps(out)
 
 
 class IsolationTree:
