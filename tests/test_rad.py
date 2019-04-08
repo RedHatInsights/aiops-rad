@@ -1,4 +1,3 @@
-import json
 import unittest
 import numpy as np
 import pandas as pd
@@ -133,6 +132,7 @@ class TestIsolationForest(unittest.TestCase):
         cls.size = np.random.randint(10, 100, size=2)
         cls.data = np.random.randint(0, 1000, size=cls.size)
         cls.forest = IsolationForest(cls.data)
+        cls.forest.predict(cls.data)
 
     def test_correct_number_of_trees_made(self):
         """
@@ -144,53 +144,39 @@ class TestIsolationForest(unittest.TestCase):
         """
         Test that each input record has a corresponding prediction
         """
-        out = json.loads(self.forest.predict(self.data))
+        out = self.forest.predict(self.data)
         self.assertEqual(len(out), len(self.data))
-
-    def test_predict_produces_json(self):
-        """
-        Test that `dump` and `load` given JSON prediction gives same results
-        """
-        json_1 = json.loads(self.forest.predict(self.data))
-
-        # dump and load should give you the exact same object
-        json_2 = json.loads(json.dumps(json_1))
-        self.assertEqual(json_1, json_2)
 
     def test_predict_contains_score(self):
         """
         Test that the `predict` JSON contains a `score` key
         """
-        json_1 = self.forest.predict(self.data)
-        lst = json.loads(json_1)
-        has_score = list(map(lambda x: "score" in x, lst))
+        arr = self.forest.predict(self.data)
+        has_score = list(map(lambda x: "score" in x, arr))
         self.assertTrue(all(has_score))
 
     def test_predict_contains_depth(self):
         """
         Test that the `predict` JSON contains a `depth` key
         """
-        json_1 = self.forest.predict(self.data)
-        lst = json.loads(json_1)
-        has_depth = list(map(lambda x: "depth" in x, lst))
+        arr = self.forest.predict(self.data)
+        has_depth = list(map(lambda x: "depth" in x, arr))
         self.assertTrue(all(has_depth))
 
     def test_predict_score_max_is_one(self):
         """
         Test `predict` scores maximum is 1
         """
-        json_1 = self.forest.predict(self.data)
-        lst = json.loads(json_1)
-        score_lt_one = list(map(lambda x: x["score"] <= 1, lst))
+        arr = self.forest.predict(self.data)
+        score_lt_one = list(map(lambda x: x["score"] <= 1, arr))
         self.assertTrue(all(score_lt_one))
 
     def test_predict_score_min_is_zero(self):
         """
         Test `predict` scores minimum is 0
         """
-        json_1 = self.forest.predict(self.data)
-        lst = json.loads(json_1)
-        score_gt_zero = list(map(lambda x: x["score"] >= 0, lst))
+        arr = self.forest.predict(self.data)
+        score_gt_zero = list(map(lambda x: x["score"] >= 0, arr))
         self.assertTrue(all(score_gt_zero))
 
     def test_predict_with_one_index_has_one_id(self):
@@ -198,29 +184,18 @@ class TestIsolationForest(unittest.TestCase):
         Test giving a basic ndarray or DataFrame, void of index.name, a default
         `index.name := id` is set.
         """
-        json_1 = self.forest.predict(self.data)
-        lst = json.loads(json_1)
-        has_id = list(map(lambda x: "id" in x, lst))
+        arr = self.forest.predict(self.data)
+        has_id = list(map(lambda x: "id" in x, arr))
         self.assertTrue(all(has_id))
 
     def test_all_columns_are_contrasted(self):
         """
         Test that `contrast` requires same number of columns as for training
         """
-        contrast = pd.read_json(self.forest.contrast())
+        contrast = pd.DataFrame(self.forest.contrast())
         columns = set(contrast["column"])
         baseline = set(self.forest.X.columns)
         self.assertTrue(len(columns.intersection(baseline)) >= 0)
-
-    def test_contrast_produces_json(self):
-        """
-        Test that `contrast` produces a JSON prediction readable by json.loads
-        """
-        json_1 = json.loads(self.forest.contrast())
-
-        # dump and load should give you the exact same object
-        json_2 = json.loads(json.dumps(json_1))
-        self.assertEqual(json_1, json_2)
 
 
 class TestIsolationTree(unittest.TestCase):

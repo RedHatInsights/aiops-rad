@@ -9,7 +9,6 @@ Much of the algorithms in this module are from the works of Liu et al.
 """
 
 import os
-import json
 import s3fs
 import pickle
 import urllib3
@@ -25,15 +24,14 @@ from requests.auth import HTTPBasicAuth
 
 
 # for plotting purposes only
-
 try:
     import matplotlib.pyplot as plt
-    from io import StringIO, BytesIO
+    from io import StringIO
 except ImportError:
     logging.warn("matplotlib not available; plotting not possible.")
 
 
-__version__ = "0.9"
+__version__ = "0.9.1"
 
 
 # for modeling IsolationForest node instances
@@ -254,7 +252,7 @@ def inventory_data_to_pandas(dic):
     # pivot the data and set `display_name` and `id` as its columns
     frame = pd.pivot_table(frame,
                            values="value",
-                           index=["display_name", "id"],
+                           index="id",
                            columns="col",
                            aggfunc="first")
     return frame
@@ -364,6 +362,7 @@ class IsolationForest:
         self.trees = []
         self.limit = limit
         self.rng = np.random.RandomState(seed)
+        self.predictions = None
 
         # ensure that the data is truly numeric
         if self.X.shape != self.X.select_dtypes(include=np.number).shape:
@@ -455,7 +454,7 @@ class IsolationForest:
             array (ndarray): numeric array comprised of N records.
 
         Returns:
-            str: JSON representation modeling prediction per record.
+            out: array that contains the `id`, `score`, and `depth` per record.
         """
         data, mapping = preprocess(array)
 
@@ -482,7 +481,8 @@ class IsolationForest:
 
             # each record (row) has a score and depth
             record = {"score": score,
-                      "depth": depth_scaled}
+                      "depth": depth_scaled,
+                      "is_anomalous": bool(score > .5)}
 
             # if the index is a MultiIndex each index name index value
             if isinstance(ix, (tuple, list)):
@@ -494,39 +494,45 @@ class IsolationForest:
 
             # create a centralized data-structure to feed into json.dumps(...)
             out.append(record)
-        return json.dumps(out)
+        self.predictions = out
+        return self.predictions
 
-    def to_report(self, out_pdf, predict=None):
+    def to_report(self):
 
-        # determine if predictions have been added beforehand
-        if predict is None:
-            frame = pd.read_json(self.predict(self.X.values))
-        else:
-            frame = pd.DataFrame.from_records(json.loads(predict))
+        # read-in predictions as a pandas DataFrame
+        frame = pd.DataFrame.from_records(self.predictions)
+        dic = {}
 
         # determine those deemed anomalous from normal
-        frame["Is Anomalous"] = frame["score"] >= .5
-        normal = frame[~frame["Is Anomalous"]]["score"]
-        anomalies = frame[frame["Is Anomalous"]]["score"]
-
-        # represent some sub-plots
-        fig, ax = plt.subplots(1, 2)
+        normal = frame[~frame["is_anomalous"]]["score"]
+        anomalies = frame[frame["is_anomalous"]]["score"]
 
         # figure 1 - a boxplot of anomaly score distributions
-        ax[0].boxplot([normal.values, anomalies.values],
-                      showfliers=True,
-                      showmeans=True)
-        ax[0].set_xticklabels(["Normal", "Anomaly"])
-        ax[0].set_xlabel("Group")
-        ax[0].set_ylabel("Anomaly Score")
+        plt.clf()
+        plt.boxplot([normal.values, anomalies.values],
+                    showfliers=True,
+                    showmeans=True)
+        plt.xticks([1, 2], ["Normal", "Anomaly"])
+        plt.xlabel("Group")
+        plt.ylabel("Anomaly Score")
+
+        # model the first plot
+        bytes_boxplot = StringIO()
+        plt.savefig(bytes_boxplot, format="svg")
+        dic["boxplot"] = bytes_boxplot.getvalue()
 
         # figure 2 - a basic histogram of score distributions
-        ax[1].hist(frame["score"], bins=25)
-        ax[1].set_ylabel("Count")
-        ax[1].set_xlabel("Anomaly Score")
+        plt.clf()
+        plt.hist(frame["score"], bins=25)
+        plt.ylabel("Count")
+        plt.xlabel("Anomaly Score")
 
-        plt.tight_layout()
-        plt.savefig(out_pdf)
+        # model the second plot
+        bytes_hist = StringIO()
+        plt.savefig(bytes_hist, format="svg")
+        dic["hist"] = bytes_hist.getvalue()
+
+        return dic
 
     def contrast(self, alpha=0.01, ks_statistic=0.8):
         """
@@ -538,26 +544,25 @@ class IsolationForest:
             array (ndarray): numeric array comprised of N records.
 
         Returns:
-            str: JSON to help contrast feature abundance per group.
+            out: array of columns and its Kolmogorov-Smirnov test result.
         """
 
         # determine if predictions have been added beforehand
-        frame = pd.read_json(self.predict(self.X.values))
+        frame = pd.DataFrame.from_records(self.predictions)
 
         # fetch only the `score` and `depth`, and determine what is anomalous
-        frame = frame[["score", "depth"]]
+        frame = frame[["score", "depth", "is_anomalous"]]
         frame.reset_index(drop=True, inplace=True)
         frame = pd.concat((frame, self.X.reset_index(drop=True)),
                           axis=1,
                           sort=False)
-        frame["Is Anomalous"] = frame["score"] > .5
 
         out = []
         for column in frame:
-            anomalies = frame[column][frame["Is Anomalous"]].values
-            normal = frame[column][~frame["Is Anomalous"]].values
+            anomalies = frame[column][frame["is_anomalous"]].values
+            normal = frame[column][~frame["is_anomalous"]].values
 
-            anomalies = np.random.choice(anomalies, size=100).astype(float)
+            anomalies = np.random.choice(anomalies, size=1000).astype(float)
             normal = np.random.choice(normal, size=1000).astype(float)
 
             ks2_out = ks_2samp(anomalies, normal)
@@ -566,7 +571,7 @@ class IsolationForest:
                             "H": ks2_out.statistic,
                             "pvalue": ks2_out.pvalue})
 
-        return json.dumps(out)
+        return out
 
 
 class IsolationTree:
