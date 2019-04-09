@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 import pandas as pd
-from rad.rad import IsolationForest
+from rad.rad import IsolationForest, IsolationTree
 
 from rad import rad
 
@@ -129,9 +129,10 @@ class TestIsolationForest(unittest.TestCase):
         """
         Building an IsolationForest *can* be expensive, so do it only once
         """
-        size = np.random.randint(10, 100, size=2)
-        data = np.random.randint(0, 10000, size=size)
-        cls.forest = IsolationForest(data)
+        cls.size = np.random.randint(10, 100, size=2)
+        cls.data = np.random.randint(0, 1000, size=cls.size)
+        cls.forest = IsolationForest(cls.data)
+        cls.forest.predict(cls.data)
 
     def test_correct_number_of_trees_made(self):
         """
@@ -143,19 +144,84 @@ class TestIsolationForest(unittest.TestCase):
         """
         Test that each input record has a corresponding prediction
         """
-        num_rows = np.random.randint(1, 100)
-        data = np.random.randint(0, 10000, (num_rows, self.forest.X.shape[1]))
-        out = self.forest.predict(data)
-        self.assertEqual(len(out), len(data))
+        out = self.forest.predict(self.data)
+        self.assertEqual(len(out), len(self.data))
 
-    def test_columns_are_in_contrast(self):
+    def test_predict_contains_score(self):
+        """
+        Test that the `predict` JSON contains a `score` key
+        """
+        arr = self.forest.predict(self.data)
+        has_score = list(map(lambda x: "score" in x, arr))
+        self.assertTrue(all(has_score))
+
+    def test_predict_contains_depth(self):
+        """
+        Test that the `predict` JSON contains a `depth` key
+        """
+        arr = self.forest.predict(self.data)
+        has_depth = list(map(lambda x: "depth" in x, arr))
+        self.assertTrue(all(has_depth))
+
+    def test_predict_score_max_is_one(self):
+        """
+        Test `predict` scores maximum is 1
+        """
+        arr = self.forest.predict(self.data)
+        score_lt_one = list(map(lambda x: x["score"] <= 1, arr))
+        self.assertTrue(all(score_lt_one))
+
+    def test_predict_score_min_is_zero(self):
+        """
+        Test `predict` scores minimum is 0
+        """
+        arr = self.forest.predict(self.data)
+        score_gt_zero = list(map(lambda x: x["score"] >= 0, arr))
+        self.assertTrue(all(score_gt_zero))
+
+    def test_predict_with_one_index_has_one_id(self):
+        """
+        Test giving a basic ndarray or DataFrame, void of index.name, a default
+        `index.name := id` is set.
+        """
+        arr = self.forest.predict(self.data)
+        has_id = list(map(lambda x: "id" in x, arr))
+        self.assertTrue(all(has_id))
+
+    def test_all_columns_are_contrasted(self):
         """
         Test that `contrast` requires same number of columns as for training
         """
-        columns = self.forest.X.columns
-        new_data = np.random.randint(0, 10000, (100, self.forest.X.shape[1]))
-        contrast = self.forest.contrast(new_data)
-        self.assertEqual(len(contrast.loc[columns]), self.forest.X.shape[1])
+        contrast = pd.DataFrame(self.forest.contrast())
+        columns = set(contrast["column"])
+        baseline = set(self.forest.X.columns)
+        self.assertTrue(len(columns.intersection(baseline)) >= 0)
+
+
+class TestIsolationTree(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        """
+        Building an IsolationTree is less expensive than forest, but do it once
+        """
+        size = np.random.randint(10, 50, size=2)
+        data = np.random.randint(0, 10000, size=size)
+        cls.tree = IsolationTree(data, depth=1, limit=10)
+
+    def test_tree_built_some_nodes(self):
+        """
+        Test that an IsolationTree has a positive number of nodes
+        """
+        num_nodes = self.tree.num_internal_nodes + self.tree.num_external_nodes
+        self.assertTrue(num_nodes > 0)
+
+    def test_random_value_in_column(self):
+        """
+        Test that given a column, q, a random number, p, falls within its range.
+        """
+        column = self.tree.data[:, self.tree._pos]
+        self.assertTrue(min(column) <= self.tree._value <= max(column))
 
 
 if __name__ == '__main__':

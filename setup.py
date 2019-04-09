@@ -3,13 +3,15 @@ from setuptools import setup
 
 setup(
     name="rad",
-    version="0.8.3",
+    version="0.9.1",
     description="AI-Ops Red Hat Anomaly Detection (RAD)",
     author="Parsa Hosseini, Ph.D.",
     author_email="phossein@redhat.com",
     url="https://github.com/ManageIQ/aiops-rad",
     packages=["rad"],
     install_requires=["numpy>=1.14",
+                      "scipy",
+                      "matplotlib",
                       "pandas",
                       "pyarrow",
                       "requests",

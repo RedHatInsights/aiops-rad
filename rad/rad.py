@@ -8,21 +8,30 @@ Much of the algorithms in this module are from the works of Liu et al.
 (https://cs.nju.edu.cn/zhouzh/zhouzh.files/publication/icdm08b.pdf)
 """
 
-
 import os
 import s3fs
 import pickle
 import urllib3
+import logging
 import requests
 import numpy as np
 import pandas as pd
 
 from pyarrow import parquet
-from requests.auth import HTTPBasicAuth
+from scipy.stats import ks_2samp
 from collections import namedtuple
+from requests.auth import HTTPBasicAuth
 
 
-__version__ = "0.8.3"
+# for plotting purposes only
+try:
+    import matplotlib.pyplot as plt
+    from io import StringIO
+except ImportError:
+    logging.warn("matplotlib not available; plotting not possible.")
+
+
+__version__ = "0.9.1"
 
 
 # for modeling IsolationForest node instances
@@ -149,49 +158,55 @@ def inventory_data_to_pandas(dic):
         >>> frame = inventory_data_to_pandas(dic)
     """
 
-    # keep track of systems lacking data; useful for finding anomalous signals
-    lacks_data = []
+    # do some exception handling to make sure the right data is passed-in
+    if isinstance(dic, dict):
+        data = dic.get("results", [])
+    elif isinstance(dic, (list, tuple)):
+        data = dic
+    else:
+        raise TypeError("`dic` must an array or dict with `results` key.")
 
     # list of dictionary items for each and every row
     rows = []
 
-    # iterate over all records; all data resides under the `results` key
-    for result in dic["results"]:
+    # # iterate over all records; all data resides under the `results` key
+    for record in data:
 
         # assert that `facts` and `account` are keys, otherwise throw error
-        if "facts" not in result:
+        if "facts" not in record:
             raise IOError("JSON must contain `facts` key under `results`")
-        if "account" not in result:
+        if "account" not in record:
             raise IOError("JSON must contain `account` key under `results`")
 
         # get some preliminary data; `id` is unique, `display_name` is not
-        data = result["facts"]
-        ix = result["id"]
-        display = result["display_name"]
+        facts = record["facts"]
+        ix = str(record["id"])
+        display = str(record["display_name"])
 
-        # identify systems which lack data
-        if len(data) == 0:
-            lacks_data.append({'ix': (display, ix)})
+        # systems lacking data lack column, so you measuring such will be tough
+        if len(facts) == 0:
             continue
 
         # data looks like this:
-        # [{'facts': {'fqdn': 'eeeg.lobatolan.home'}, 'namespace': 'inventory'}]
+        # [{'facts': {'fqdn': '...'}, 'namespace': '...'}]
 
-        # iterate over all the elements in the list; usually gets one element
-        for dic in data:
-            if not isinstance(dic, dict):
-                raise IOError("Data elements must be dict")
+        # iterate over all the elements in `facts`
+        for fact in facts:
+            if not isinstance(fact, dict):
+                msg = "`facts` must dict, i.e. {'facts': {'fqdn': '...'}}"
+                raise IOError(msg)
 
-            if "facts" not in dic:
+            if "facts" not in fact:
                 raise KeyError("`facts` key must reside in the dictionary")
 
-            # iterate over all the key-value pairs
-            for k, v in dic["facts"].items():
+            # iterate over all the key-value pairs for each `facts` item
+            for k, v in fact["facts"].items():
 
                 # handling numeric values
-                if isinstance(v, (int, bool)):
+                if isinstance(v, (int, float, bool)):
                     v = float(v)
-                    rows.append({"ix": (display, ix),
+                    rows.append({"id": ix,
+                                 "display_name": display,
                                  "value": v,
                                  "col": k})
 
@@ -201,13 +216,15 @@ def inventory_data_to_pandas(dic):
                         # some larger `v_` instances are collections; ignore
                         if isinstance(v_, (dict, list)):
                             continue
-                        rows.append({"ix": (display, ix),
+                        rows.append({"id": ix,
+                                     "display_name": display,
                                      "value": True,
                                      "col": "{}|{}".format(k, v_)})
 
                 # handling strings is trivial
                 elif isinstance(v, str):
-                    rows.append({"ix": (display, ix),
+                    rows.append({"id": ix,
+                                 "display_name": display,
                                  "value": v,
                                  "col": k})
 
@@ -217,37 +234,31 @@ def inventory_data_to_pandas(dic):
                         # some larger `v_` instances are collections; ignore
                         if isinstance(v_, (dict, list)):
                             continue
-                        rows.append({"ix": (display, ix),
+                        rows.append({"id": ix,
+                                     "display_name": display,
                                      "value": v_,
-                                     "col": "{}".format(k_)})
+                                     "col": k_})
 
-                # end-case; useful if value is None or NaN
+                # end-case; useful if key has column but its value is NaN / None
                 else:
-                    rows.append({"ix": (display, ix),
+                    rows.append({"id": ix,
+                                 "display_name": display,
                                  "value": -1,
                                  "col": k})
 
     # take all the newly-added data and make it into a DataFrame
-    frame = pd.DataFrame(rows).drop_duplicates()
+    frame = pd.DataFrame(rows)
 
-    # add all the data that lack values
-    for ld in lacks_data:
-        frame = frame.append(pd.Series({"ix": ld["ix"]}),
-                             ignore_index=True)
-
-    # pivot the data so each row is an index and each feature is a column
-    frame = frame.pivot(index="ix", columns="col", values="value")
-
-    # each index is the `display_name` and `id`; this combination is unique
-    frame.index = pd.MultiIndex.from_tuples(tuple(frame.index))
-
-    # if you have IDs which lack data, such IDs add an NaN column; remove this
-    if len(lacks_data) > 0:
-        frame.drop([np.nan], axis=1, inplace=True)
+    # pivot the data and set `display_name` and `id` as its columns
+    frame = pd.pivot_table(frame,
+                           values="value",
+                           index="id",
+                           columns="col",
+                           aggfunc="first")
     return frame
 
 
-def preprocess(frame, index=None, drop=None, fill_value=-1):
+def preprocess(frame, index=None, drop=None):
     """
     Performs important DataFrame pre-processing so that indices can be set,
     columns can be dropped, or non-numeric columns be encoded as their
@@ -263,7 +274,7 @@ def preprocess(frame, index=None, drop=None, fill_value=-1):
     """
 
     # copy the frame so the original is not overwritten
-    df = pd.DataFrame(frame).fillna(fill_value)
+    df = pd.DataFrame(frame).fillna(0)
 
     # set the index to be something that identifies each row
     if index is not None:
@@ -292,8 +303,7 @@ def preprocess(frame, index=None, drop=None, fill_value=-1):
     return df, mappings
 
 
-def preprocess_on(frame, on, min_records=50, index=None, drop=None,
-                  fill_value=-1):
+def preprocess_on(frame, on, min_records=50, index=None, drop=None):
     """
     Similar to `preprocess` but groups records in the DataFrame on a group pf
     features. Each respective chunk or block is then added to a list; analogous
@@ -310,7 +320,7 @@ def preprocess_on(frame, on, min_records=50, index=None, drop=None,
          DataFrame and dict: processed DataFrame and encodings of its columns.
     """
 
-    data = pd.DataFrame(frame)
+    data, mapping = preprocess(frame, index, drop)
     out = []
 
     # group-by `on` and return the chunks which satisfy minimum length
@@ -320,10 +330,6 @@ def preprocess_on(frame, on, min_records=50, index=None, drop=None,
             # if only `on` is provided, set this as the index
             if index is None and on is not None:
                 index = on
-
-            # run `preprocess` on each chunk
-            chunk, mapping = preprocess(chunk, index=index, drop=drop,
-                                        fill_value=fill_value)
             out.append((chunk, mapping))
     return out
 
@@ -348,12 +354,15 @@ class IsolationForest:
     def __init__(self, array, num_trees=150, sample_size=30, limit=None,
                  seed=None):
         self.num_trees = num_trees
-        self.X = pd.DataFrame(array)
+        table, mapping = preprocess(array)
+        self.X = table
+        self.mapping = mapping
         self.num_records = len(array)
         self.sample_size = sample_size
         self.trees = []
         self.limit = limit
         self.rng = np.random.RandomState(seed)
+        self.predictions = None
 
         # ensure that the data is truly numeric
         if self.X.shape != self.X.select_dtypes(include=np.number).shape:
@@ -445,37 +454,87 @@ class IsolationForest:
             array (ndarray): numeric array comprised of N records.
 
         Returns:
-            DataFrame: Nx2 array where column 1 and 2 is depth and score.
+            out: array that contains the `id`, `score`, and `depth` per record.
         """
-        data = pd.DataFrame(array)
+        data, mapping = preprocess(array)
+
+        # if an ndarray or DataFrame lacking index-name is given, set index name
+        if data.index.names == [None]:
+            data.index.names = ["id"]
 
         # for keeping track of anomaly scores
-        scores = []
+        out = []
 
         # generate an anomaly score for each row in the dataset, array
-        for i in range(len(data)):
+        for ix, row in data.iterrows():
 
             # for each record, i, find out its depth in each tree, j
             depth = 0
             for j in range(self.num_trees):
-                depth += float(TreeScore(data.values[i], self.trees[j]).path)
+                depth += float(TreeScore(row.values, self.trees[j]).path)
 
             # scale the depth by the total number of trees
             depth_scaled = depth / self.num_trees
 
             # output a `score` and `depth` per record
             score = s(depth_scaled, self.sample_size)
-            scores.append([score, depth_scaled])
 
-        # return anomaly score and depth for each record
-        out = pd.DataFrame(scores,
-                           index=data.index,
-                           columns=["score", "depth"])
+            # each record (row) has a score and depth
+            record = {"score": score,
+                      "depth": depth_scaled,
+                      "is_anomalous": bool(score > .5)}
 
-        # sort by score so that dissemination can be easier
-        return out.sort_values("score", ascending=False)
+            # if the index is a MultiIndex each index name index value
+            if isinstance(ix, (tuple, list)):
+                record.update(zip(data.index.names, ix))
 
-    def contrast(self, array, min_score=0.55):
+            # otherwise, the index is just an Index, so map this one name
+            else:
+                record.update({data.index.name: ix})
+
+            # create a centralized data-structure to feed into json.dumps(...)
+            out.append(record)
+        self.predictions = out
+        return self.predictions
+
+    def to_report(self):
+
+        # read-in predictions as a pandas DataFrame
+        frame = pd.DataFrame.from_records(self.predictions)
+        dic = {}
+
+        # determine those deemed anomalous from normal
+        normal = frame[~frame["is_anomalous"]]["score"]
+        anomalies = frame[frame["is_anomalous"]]["score"]
+
+        # figure 1 - a boxplot of anomaly score distributions
+        plt.clf()
+        plt.boxplot([normal.values, anomalies.values],
+                    showfliers=True,
+                    showmeans=True)
+        plt.xticks([1, 2], ["Normal", "Anomaly"])
+        plt.xlabel("Group")
+        plt.ylabel("Anomaly Score")
+
+        # model the first plot
+        bytes_boxplot = StringIO()
+        plt.savefig(bytes_boxplot, format="svg")
+        dic["boxplot"] = bytes_boxplot.getvalue()
+
+        # figure 2 - a basic histogram of score distributions
+        plt.clf()
+        plt.hist(frame["score"], bins=25)
+        plt.ylabel("Count")
+        plt.xlabel("Anomaly Score")
+
+        # model the second plot
+        bytes_hist = StringIO()
+        plt.savefig(bytes_hist, format="svg")
+        dic["hist"] = bytes_hist.getvalue()
+
+        return dic
+
+    def contrast(self, alpha=0.01, ks_statistic=0.8):
         """
         Contrasts features given anomalous and non-anomalous records. This
         would be helpful when diving into "how come" a record was deemed
@@ -483,24 +542,36 @@ class IsolationForest:
 
         Args:
             array (ndarray): numeric array comprised of N records.
-            min_score (float): score cutoff to classify record as anomalous
 
         Returns:
-            DataFrame: table showing various values for anomalous records.
+            out: array of columns and its Kolmogorov-Smirnov test result.
         """
 
-        report = []
-        for frame, name in [(self.X, "History"), (array, "Query")]:
-            preds = self.predict(frame)
-            preds["is anomalous"] = preds["score"] > min_score
-            preds["data format"] = name
-            combined = pd.concat((pd.DataFrame(frame), preds),
-                                 axis=1, sort=False)
-            report.append(combined)
+        # determine if predictions have been added beforehand
+        frame = pd.DataFrame.from_records(self.predictions)
 
-        return pd.concat(report).\
-            groupby(["is anomalous", "data format"]).\
-            mean().T
+        # fetch only the `score` and `depth`, and determine what is anomalous
+        frame = frame[["score", "depth", "is_anomalous"]]
+        frame.reset_index(drop=True, inplace=True)
+        frame = pd.concat((frame, self.X.reset_index(drop=True)),
+                          axis=1,
+                          sort=False)
+
+        out = []
+        for column in frame:
+            anomalies = frame[column][frame["is_anomalous"]].values
+            normal = frame[column][~frame["is_anomalous"]].values
+
+            anomalies = np.random.choice(anomalies, size=1000).astype(float)
+            normal = np.random.choice(normal, size=1000).astype(float)
+
+            ks2_out = ks_2samp(anomalies, normal)
+            if ks2_out.pvalue <= alpha and ks2_out.statistic >= ks_statistic:
+                out.append({"column": column,
+                            "H": ks2_out.statistic,
+                            "pvalue": ks2_out.pvalue})
+
+        return out
 
 
 class IsolationTree:
@@ -529,6 +600,7 @@ class IsolationTree:
         # a column number or position that is selected; from 0 to N
         self._pos = None
         self.num_external_nodes = 0
+        self.num_internal_nodes = 0
         self.rng = np.random.RandomState(seed)
         self.root = self._populate(data, depth, limit)
 
@@ -586,6 +658,7 @@ class IsolationTree:
             right = data[~truth]
 
             # recursively repeat by propogating the left and right branches
+            self.num_internal_nodes += 1
             return Node(data=data,
                         size=len(data),
                         pos=self._pos,
