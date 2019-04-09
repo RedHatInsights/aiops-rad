@@ -197,6 +197,24 @@ class TestIsolationForest(unittest.TestCase):
         baseline = set(self.forest.X.columns)
         self.assertTrue(len(columns.intersection(baseline)) >= 0)
 
+    def test_real_positive_anomaly_is_predicted(self):
+        """
+        Test that really-large values are labeled as anomalies
+        """
+        data = np.repeat(np.finfo(float).max, self.size[1])
+        data = np.reshape(data, (1, self.size[1]))
+        anom = list(map(lambda x: x["is_anomalous"], self.forest.predict(data)))
+        self.assertTrue(all(anom))
+
+    def test_real_negative_anomaly_is_predicted(self):
+        """
+        Test that really-large values are labeled as anomalies
+        """
+        data = np.repeat(np.finfo(float).min, self.size[1])
+        data = np.reshape(data, (1, self.size[1]))
+        anom = list(map(lambda x: x["is_anomalous"], self.forest.predict(data)))
+        self.assertTrue(all(anom))
+
 
 class TestIsolationTree(unittest.TestCase):
 
