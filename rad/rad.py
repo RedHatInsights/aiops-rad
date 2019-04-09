@@ -11,8 +11,6 @@ Much of the algorithms in this module are from the works of Liu et al.
 import os
 import s3fs
 import pickle
-import urllib3
-import requests
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -21,10 +19,9 @@ from io import StringIO
 from pyarrow import parquet
 from scipy.stats import ks_2samp
 from collections import namedtuple
-from requests.auth import HTTPBasicAuth
 
 
-__version__ = "0.9.2"
+__version__ = "0.9.3"
 
 
 # for modeling IsolationForest node instances
@@ -108,30 +105,6 @@ def fetch_s3(bucket, profile_name=None, folder=None, date=None,
     return frame
 
 
-def fetch_inventory_data(email, password, url=None):
-    """
-    Trivial function to fetch some Host Inventory Data.
-
-    Args:
-        email (str): user authentication key.
-        password (str): password; defaults to `redhat`
-        url (str): endpoint for the host inventory data.
-
-    Returns:
-        dict following retrieval from the Host Inventory API.
-
-    Examples:
-        >>> dic = fetch_inventory_data()
-    """
-    if url is None:
-        url = "https://ci.cloud.paas.upshift.redhat.com/api/inventory/v1/hosts"
-
-    # it is presumed certificates are not needed to access the URL
-    urllib3.disable_warnings()
-    resp = requests.get(url, auth=HTTPBasicAuth(email, password), verify=False)
-    return resp.json()
-
-
 def inventory_data_to_pandas(dic):
     """
     Parse a JSON object, fetched from the Host Inventory Service, and massage
@@ -145,10 +118,6 @@ def inventory_data_to_pandas(dic):
 
     Returns:
         DataFrame: each column is a feature and its cell is its value.
-
-    Examples:
-        >>> dic = fetch_inventory_data()  # provide your specific credentials
-        >>> frame = inventory_data_to_pandas(dic)
     """
 
     # do some exception handling to make sure the right data is passed-in
