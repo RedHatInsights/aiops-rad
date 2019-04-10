@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 import pandas as pd
-from rad.rad import IsolationForest, IsolationTree
+from rad.rad import IsolationForest, IsolationTree, TreeScore
 
 from rad import rad
 
@@ -188,14 +188,23 @@ class TestIsolationForest(unittest.TestCase):
         has_id = list(map(lambda x: "id" in x, arr))
         self.assertTrue(all(has_id))
 
-    def test_all_columns_are_contrasted(self):
+    def test_real_positive_anomaly_is_predicted(self):
         """
-        Test that `contrast` requires same number of columns as for training
+        Test that really-large values are labeled as anomalies
         """
-        contrast = pd.DataFrame(self.forest.contrast())
-        columns = set(contrast["column"])
-        baseline = set(self.forest.X.columns)
-        self.assertTrue(len(columns.intersection(baseline)) >= 0)
+        data = np.repeat(np.finfo(float).max, self.size[1])
+        data = np.reshape(data, (1, self.size[1]))
+        anom = list(map(lambda x: x["is_anomalous"], self.forest.predict(data)))
+        self.assertTrue(all(anom))
+
+    def test_real_negative_anomaly_is_predicted(self):
+        """
+        Test that really-large values are labeled as anomalies
+        """
+        data = np.repeat(np.finfo(float).min, self.size[1])
+        data = np.reshape(data, (1, self.size[1]))
+        anom = list(map(lambda x: x["is_anomalous"], self.forest.predict(data)))
+        self.assertTrue(all(anom))
 
 
 class TestIsolationTree(unittest.TestCase):
@@ -222,6 +231,50 @@ class TestIsolationTree(unittest.TestCase):
         """
         column = self.tree.data[:, self.tree._pos]
         self.assertTrue(min(column) <= self.tree._value <= max(column))
+
+    def test_random_value_within_column(self):
+        """
+        Test that the `Node` attribute, `value`, falls between a columns range.
+        """
+        node = self.tree.root
+        min_ = min(node.data[:, node.pos])
+        max_ = max(node.data[:, node.pos])
+        self.assertTrue(min_ <= node.value <= max_)
+
+    def test_root_has_max_two_nodes(self):
+        """
+        Test that the root-Node object has a maximum of two Nodes
+        """
+        root = self.tree.root
+        left = root.left is not None
+        right = root.right is not None
+        self.assertTrue(sum([left, right]) <= 2)
+
+    def test_internal_node_has_children(self):
+        """
+        Test than an internal node must have two Node instances.
+        """
+        left = self.tree.root.left is not None
+        right = self.tree.root.right is not None
+        truth = all([left, right, self.tree.root.type == "internal"])
+        self.assertTrue(truth)
+
+
+class TestTreeScore(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        size = np.random.randint(10, 50, size=2)
+        cls.data = np.random.randint(0, 1000, size=size)
+        cls.tree = IsolationTree(cls.data, depth=1, limit=10)
+
+    def test_path_is_not_negative(self):
+        """
+        Test that the depth is positive
+        """
+        vector = np.random.random(self.data.shape[1])
+        scorer = TreeScore(vector, self.tree)
+        self.assertTrue(scorer.path >= 0)
 
 
 if __name__ == '__main__':

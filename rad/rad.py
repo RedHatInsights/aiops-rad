@@ -11,27 +11,17 @@ Much of the algorithms in this module are from the works of Liu et al.
 import os
 import s3fs
 import pickle
-import urllib3
-import logging
-import requests
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
+from io import StringIO
 from pyarrow import parquet
 from scipy.stats import ks_2samp
 from collections import namedtuple
-from requests.auth import HTTPBasicAuth
 
 
-# for plotting purposes only
-try:
-    import matplotlib.pyplot as plt
-    from io import StringIO
-except ImportError:
-    logging.warn("matplotlib not available; plotting not possible.")
-
-
-__version__ = "0.9.1"
+__version__ = "0.9.3"
 
 
 # for modeling IsolationForest node instances
@@ -115,30 +105,6 @@ def fetch_s3(bucket, profile_name=None, folder=None, date=None,
     return frame
 
 
-def fetch_inventory_data(email, password, url=None):
-    """
-    Trivial function to fetch some Host Inventory Data.
-
-    Args:
-        email (str): user authentication key.
-        password (str): password; defaults to `redhat`
-        url (str): endpoint for the host inventory data.
-
-    Returns:
-        dict following retrieval from the Host Inventory API.
-
-    Examples:
-        >>> dic = fetch_inventory_data()
-    """
-    if url is None:
-        url = "https://ci.cloud.paas.upshift.redhat.com/api/inventory/v1/hosts"
-
-    # it is presumed certificates are not needed to access the URL
-    urllib3.disable_warnings()
-    resp = requests.get(url, auth=HTTPBasicAuth(email, password), verify=False)
-    return resp.json()
-
-
 def inventory_data_to_pandas(dic):
     """
     Parse a JSON object, fetched from the Host Inventory Service, and massage
@@ -152,10 +118,6 @@ def inventory_data_to_pandas(dic):
 
     Returns:
         DataFrame: each column is a feature and its cell is its value.
-
-    Examples:
-        >>> dic = fetch_inventory_data()  # provide your specific credentials
-        >>> frame = inventory_data_to_pandas(dic)
     """
 
     # do some exception handling to make sure the right data is passed-in
@@ -444,7 +406,7 @@ class IsolationForest:
             raise ValueError("Argument must model an IsolationForest")
         return forest
 
-    def predict(self, array):
+    def predict(self, array, min_score=0.5):
         """
         Given a new user-provided array, generate an anomaly score. Such scores
         range from 0 to 1; values near 0 are not anomalous, while values near
@@ -452,6 +414,7 @@ class IsolationForest:
 
         Args:
             array (ndarray): numeric array comprised of N records.
+            min_score (float): minimum-allowable score to be labeled an anomaly.
 
         Returns:
             out: array that contains the `id`, `score`, and `depth` per record.
@@ -482,7 +445,7 @@ class IsolationForest:
             # each record (row) has a score and depth
             record = {"score": score,
                       "depth": depth_scaled,
-                      "is_anomalous": bool(score > .5)}
+                      "is_anomalous": bool(score > min_score)}
 
             # if the index is a MultiIndex each index name index value
             if isinstance(ix, (tuple, list)):
