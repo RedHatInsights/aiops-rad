@@ -15,13 +15,12 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from io import StringIO
 from pyarrow import parquet
-from scipy.stats import ks_2samp
+from scipy.stats import norm
 from collections import namedtuple
 
 
-__version__ = "0.9.3"
+__version__ = "0.9.4"
 
 
 # for modeling IsolationForest node instances
@@ -214,7 +213,7 @@ def inventory_data_to_pandas(dic):
     # pivot the data and set `display_name` and `id` as its columns
     frame = pd.pivot_table(frame,
                            values="value",
-                           index="id",
+                           index=["id", "display_name"],
                            columns="col",
                            aggfunc="first")
     return frame
@@ -324,7 +323,7 @@ class IsolationForest:
         self.trees = []
         self.limit = limit
         self.rng = np.random.RandomState(seed)
-        self.predictions = None
+        self._predictions = None
 
         # ensure that the data is truly numeric
         if self.X.shape != self.X.select_dtypes(include=np.number).shape:
@@ -457,14 +456,71 @@ class IsolationForest:
 
             # create a centralized data-structure to feed into json.dumps(...)
             out.append(record)
-        self.predictions = out
-        return self.predictions
+        return out
+
+    def predict_and_contrast(self, array, min_score=0.5, alpha=0.05):
+        """
+        Performs both `predict` and contrasts features which are enriched in
+        the anomalous group compared to the "normal" group. Thus, you can
+        isolate features that are enriched. The way such contrasting works is
+        by deriving the Z-score, (x - u / s), where x is the value of each
+        anomalous value, u is the mean of all normal values in said-feature,
+        and s is its corresponding standard deviation.
+
+        Args:
+            array (ndarray): numeric array comprised of N records.
+            min_score (float): minimum-allowable score to be labeled an anomaly.
+            alpha (float): p-value cutoff.
+
+        Returns:
+            out: array that contains the `id`, `score`, and `depth` per record.
+        """
+
+        # generate predictions for this respective data-set
+        this_data = pd.DataFrame(array)
+        preds = self.predict(this_data, min_score=min_score)
+
+        # join original data with its predictions and group-by anomalous
+        merged = pd.concat((this_data.reset_index(drop=True),
+                            pd.DataFrame(preds)), axis=1)
+
+        # group records by whether they are anomalous or not
+        agg = merged.groupby("is_anomalous")
+        normal_subset = agg.get_group(False)
+
+        for i, pred in enumerate(preds):
+
+            # ... if it is an anomaly, add the features that warrant this label
+            if pred["is_anomalous"]:
+                its_data = dict(this_data.iloc[i])
+                anomalous_features = []
+
+                for column, sample_mean in its_data.items():
+                    vector = normal_subset[column]
+                    pop_mean = vector.mean()
+                    pop_std = vector.std()
+                    if pop_std == 0:
+                        continue
+                    z_score = (sample_mean - pop_mean) / pop_std
+                    p_value = norm.sf(abs(z_score)) * 2
+
+                    if p_value < alpha:
+                        a_feature = {"feature": column,
+                                     "pvalue": p_value,
+                                     "observed_value": sample_mean,
+                                     "normal_mean": pop_mean,
+                                     "normal_stdev": pop_std
+                                     }
+                        anomalous_features.append(a_feature)
+                pred["anomalous_features"] = anomalous_features
+                pred["num_features"] = len(anomalous_features)
+        self._predictions = preds
+        return preds
 
     def to_report(self):
 
         # read-in predictions as a pandas DataFrame
-        frame = pd.DataFrame.from_records(self.predictions)
-        dic = {}
+        frame = pd.DataFrame.from_records(self._predictions)
 
         # determine those deemed anomalous from normal
         normal = frame[~frame["is_anomalous"]]["score"]
@@ -480,9 +536,7 @@ class IsolationForest:
         plt.ylabel("Anomaly Score")
 
         # model the first plot
-        bytes_boxplot = StringIO()
-        plt.savefig(bytes_boxplot, format="svg")
-        dic["boxplot"] = bytes_boxplot.getvalue()
+        plt.savefig("boxplot.png", format="png")
 
         # figure 2 - a basic histogram of score distributions
         plt.clf()
@@ -491,50 +545,7 @@ class IsolationForest:
         plt.xlabel("Anomaly Score")
 
         # model the second plot
-        bytes_hist = StringIO()
-        plt.savefig(bytes_hist, format="svg")
-        dic["hist"] = bytes_hist.getvalue()
-
-        return dic
-
-    def contrast(self, alpha=0.01, ks_statistic=0.8):
-        """
-        Contrasts features given anomalous and non-anomalous records. This
-        would be helpful when diving into "how come" a record was deemed
-        anomalous.
-
-        Args:
-            array (ndarray): numeric array comprised of N records.
-
-        Returns:
-            out: array of columns and its Kolmogorov-Smirnov test result.
-        """
-
-        # determine if predictions have been added beforehand
-        frame = pd.DataFrame.from_records(self.predictions)
-
-        # fetch only the `score` and `depth`, and determine what is anomalous
-        frame = frame[["score", "depth", "is_anomalous"]]
-        frame.reset_index(drop=True, inplace=True)
-        frame = pd.concat((frame, self.X.reset_index(drop=True)),
-                          axis=1,
-                          sort=False)
-
-        out = []
-        for column in frame:
-            anomalies = frame[column][frame["is_anomalous"]].values
-            normal = frame[column][~frame["is_anomalous"]].values
-
-            anomalies = np.random.choice(anomalies, size=1000).astype(float)
-            normal = np.random.choice(normal, size=1000).astype(float)
-
-            ks2_out = ks_2samp(anomalies, normal)
-            if ks2_out.pvalue <= alpha and ks2_out.statistic >= ks_statistic:
-                out.append({"column": column,
-                            "H": ks2_out.statistic,
-                            "pvalue": ks2_out.pvalue})
-
-        return out
+        plt.savefig("histogram.png", format="png")
 
 
 class IsolationTree:
