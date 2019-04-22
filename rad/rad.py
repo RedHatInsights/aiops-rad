@@ -11,10 +11,12 @@ Much of the algorithms in this module are from the works of Liu et al.
 import os
 import s3fs
 import pickle
+import base64
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from io import BytesIO
 from pyarrow import parquet
 from scipy.stats import norm
 from collections import namedtuple
@@ -209,6 +211,8 @@ def inventory_data_to_pandas(dic):
 
     # take all the newly-added data and make it into a DataFrame
     frame = pd.DataFrame(rows)
+    if len(frame) == 0:
+        raise IOError("No data present. Ensure `dic` has valid data.")
 
     # pivot the data and set `display_name` and `id` as its columns
     frame = pd.pivot_table(frame,
@@ -456,6 +460,7 @@ class IsolationForest:
 
             # create a centralized data-structure to feed into json.dumps(...)
             out.append(record)
+        self._predictions = out
         return out
 
     def predict_and_contrast(self, array, min_score=0.5, alpha=0.05):
@@ -486,24 +491,35 @@ class IsolationForest:
 
         # group records by whether they are anomalous or not
         agg = merged.groupby("is_anomalous")
-        normal_subset = agg.get_group(False)
 
+        # contrasting requires two groups: those deemed anomalous versus normal
+        if len(agg.groups) != 2:
+            raise ValueError("Cannot contrast; add data to contrast groups.")
+
+        # get the "normal" data, i.e. those deemed not anomalous
+        normal_subset = agg.get_group(False)
         for i, pred in enumerate(preds):
 
-            # ... if it is an anomaly, add the features that warrant this label
+            # if it is an anomaly, add the features that warrant this label
             if pred["is_anomalous"]:
                 its_data = dict(this_data.iloc[i])
                 anomalous_features = []
 
+                # per column, derive "normal" point-estimates
                 for column, sample_mean in its_data.items():
                     vector = normal_subset[column]
                     pop_mean = vector.mean()
                     pop_std = vector.std()
+
+                    # you cannot divide by zero
                     if pop_std == 0:
                         continue
+
+                    # compute Z score and derive two-tailed p-value
                     z_score = (sample_mean - pop_mean) / pop_std
                     p_value = norm.sf(abs(z_score)) * 2
 
+                    # add significant p-value feature to the prediction
                     if p_value < alpha:
                         a_feature = {"feature": column,
                                      "pvalue": p_value,
@@ -526,6 +542,9 @@ class IsolationForest:
         normal = frame[~frame["is_anomalous"]]["score"]
         anomalies = frame[frame["is_anomalous"]]["score"]
 
+        out = {}
+        header = "data:image/png;base64,"
+
         # figure 1 - a boxplot of anomaly score distributions
         plt.clf()
         plt.boxplot([normal.values, anomalies.values],
@@ -536,16 +555,24 @@ class IsolationForest:
         plt.ylabel("Anomaly Score")
 
         # model the first plot
-        plt.savefig("boxplot.png", format="png")
+        boxplot_io = BytesIO()
+        plt.savefig(boxplot_io, format="png")
+        boxplot_io.seek(0)
+        boxplot_b64 = base64.b64encode(boxplot_io.read())
+        out["boxplot"] = header + boxplot_b64.decode("utf-8")
 
         # figure 2 - a basic histogram of score distributions
         plt.clf()
+        histogram_io = BytesIO()
         plt.hist(frame["score"], bins=25)
         plt.ylabel("Count")
         plt.xlabel("Anomaly Score")
+        plt.savefig(histogram_io, format="png")
+        histogram_io.seek(0)
+        histogram_b64 = base64.b64encode(histogram_io.read())
+        out["histogram"] = header + histogram_b64.decode("utf-8")
 
-        # model the second plot
-        plt.savefig("histogram.png", format="png")
+        return out
 
 
 class IsolationTree:
