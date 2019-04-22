@@ -14,7 +14,6 @@ setup(
                       "matplotlib",
                       "pandas",
                       "pyarrow",
-                      "requests",
                       "s3fs",
                       "urllib3"],
     tests_require=['pytest',
