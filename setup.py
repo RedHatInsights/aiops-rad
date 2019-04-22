@@ -15,7 +15,7 @@ setup(
                       "pandas",
                       "pyarrow",
                       "s3fs",
-                      "urllib3"],
+                      "urllib3<1.25,>=1.20"],
     tests_require=['pytest',
                    'pytest-cov'],
     setup_requires=["pytest-runner"],
