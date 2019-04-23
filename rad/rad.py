@@ -12,6 +12,7 @@ import os
 import s3fs
 import pickle
 import base64
+import logging
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -22,13 +23,20 @@ from scipy.stats import norm
 from collections import namedtuple
 
 
-__version__ = "0.9.4"
+__version__ = "0.9.5"
 
 
 # for modeling IsolationForest node instances
 Node = namedtuple("Node",
                   ['data', 'size', 'pos', 'value', 'depth', 'left', 'right',
                    'type'])
+
+logging.basicConfig(format="%(asctime)s | "+\
+                           "%(funcName)s | "+\
+                           "#%(lineno)d | "+\
+                           "%(levelname)s | "+\
+                           "%(message)s",
+                    level=logging.INFO)
 
 
 def c(n):
@@ -42,6 +50,7 @@ def c(n):
     Returns:
         average length of an unsuccessful binary search query.
     """
+    logging.info("Computing BST length given n={}".format(n))
     if n <= 0:
         raise ValueError("`n` must be positive; length cannot be negative.")
     euler_constant = 0.5772156649
@@ -66,6 +75,7 @@ def s(x, n):
     Returns:
         anomaly score between 0 and 1.
     """
+    logging.info("Computing anomaly score given x={}, n={}".format(x, n))
     return 2.0 ** (-x / c(n))
 
 
@@ -132,7 +142,7 @@ def inventory_data_to_pandas(dic):
     # list of dictionary items for each and every row
     rows = []
 
-    # # iterate over all records; all data resides under the `results` key
+    # iterate over all records; all data resides under the `results` key
     for record in data:
 
         # assert that `facts` and `account` are keys, otherwise throw error
@@ -145,6 +155,7 @@ def inventory_data_to_pandas(dic):
         facts = record["facts"]
         ix = str(record["id"])
         display = str(record["display_name"])
+        logging.info("Getting system facts for {}".format(ix))
 
         # systems lacking data lack column, so you measuring such will be tough
         if len(facts) == 0:
@@ -161,9 +172,11 @@ def inventory_data_to_pandas(dic):
 
             if "facts" not in fact:
                 raise KeyError("`facts` key must reside in the dictionary")
+            logging.info("{} fact(s) found".format(len(fact["facts"])))
 
             # iterate over all the key-value pairs for each `facts` item
             for k, v in fact["facts"].items():
+                logging.info("{} => {}".format(k, v))
 
                 # handling numeric values
                 if isinstance(v, (int, float, bool)):
@@ -211,6 +224,8 @@ def inventory_data_to_pandas(dic):
 
     # take all the newly-added data and make it into a DataFrame
     frame = pd.DataFrame(rows)
+    logging.info("# data-points parsed: {:,}".format(len(frame)))
+
     if len(frame) == 0:
         raise IOError("No data present. Ensure `dic` has valid data.")
 
@@ -220,6 +235,7 @@ def inventory_data_to_pandas(dic):
                            index=["id", "display_name"],
                            columns="col",
                            aggfunc="first")
+    logging.info("Tabular shape: {:,} x {:,}".format(*frame.shape))
     return frame
 
 
@@ -239,6 +255,7 @@ def preprocess(frame, index=None, drop=None):
     """
 
     # copy the frame so the original is not overwritten
+    logging.info("Data shape: {} x {}".format(*frame.shape))
     df = pd.DataFrame(frame).fillna(0)
 
     # set the index to be something that identifies each row
@@ -254,6 +271,7 @@ def preprocess(frame, index=None, drop=None):
     for column in df.select_dtypes(include=(object, bool)):
 
         # convert the non-numeric column as categorical and overwrite column
+        logging.info("Mapping `{}` to integer".format(column))
         category = df[column].astype("category")
         df[column] = category.cat.codes.astype(float)
 
@@ -263,6 +281,7 @@ def preprocess(frame, index=None, drop=None):
 
     # remove all remaining columns, i.e. `datetime`
     df = df.select_dtypes(include=np.number)
+    logging.info("# columns encoded as integer: {}".format(len(mappings)))
 
     # return the DataFrame and categorical mappings
     return df, mappings
@@ -318,6 +337,7 @@ class IsolationForest:
     """
     def __init__(self, array, num_trees=150, sample_size=30, limit=None,
                  seed=None):
+        logging.info("Building forest with {} tree(s)".format(num_trees))
         self.num_trees = num_trees
         table, mapping = preprocess(array)
         self.X = table
@@ -328,22 +348,30 @@ class IsolationForest:
         self.limit = limit
         self.rng = np.random.RandomState(seed)
         self._predictions = None
+        logging.info("Sample size and limit: {}".format(sample_size, limit))
 
         # ensure that the data is truly numeric
         if self.X.shape != self.X.select_dtypes(include=np.number).shape:
             raise ValueError("Non-numeric features found. Try `preprocess`.")
 
+        # ensure that sample_size is positive
+        if sample_size <= 0:
+            raise ValueError("`sample_size` must be positive")
+
         # set the height limit
         if limit is None:
             self.limit = int(np.ceil(np.log2(self.sample_size)))
+            logging.info("New limit set to {}".format(self.limit))
 
         # train a tree around a subset of the data, hence ensemble
         for _ in range(self.num_trees):
 
             # select so-many rows
+            logging.info("Sampling {} records".format(self.sample_size))
             ix = self.rng.choice(range(self.num_records), self.sample_size)
             subset = self.X.values[ix]
             self.trees.append(IsolationTree(subset, 0, self.limit, seed=seed))
+            logging.info("{} trees built OK".format(len(self.trees)))
 
     @staticmethod
     def dump(forest, out_file):
@@ -422,6 +450,7 @@ class IsolationForest:
         Returns:
             out: array that contains the `id`, `score`, and `depth` per record.
         """
+        logging.info("Input query data-set: {} x {}".format(*array.shape))
         data, mapping = preprocess(array)
 
         # if an ndarray or DataFrame lacking index-name is given, set index name
@@ -433,14 +462,17 @@ class IsolationForest:
 
         # generate an anomaly score for each row in the dataset, array
         for ix, row in data.iterrows():
+            logging.info("Computing score for `{}` across trees".format(ix))
 
             # for each record, i, find out its depth in each tree, j
             depth = 0
             for j in range(self.num_trees):
                 depth += float(TreeScore(row.values, self.trees[j]).path)
+            logging.info("Depth: {}".format(depth))
 
             # scale the depth by the total number of trees
             depth_scaled = depth / self.num_trees
+            logging.info("Scaled depth: {}".format(depth_scaled))
 
             # output a `score` and `depth` per record
             score = s(depth_scaled, self.sample_size)
@@ -449,6 +481,7 @@ class IsolationForest:
             record = {"score": score,
                       "depth": depth_scaled,
                       "is_anomalous": bool(score > min_score)}
+            logging.info("Outcome: {}".format(record))
 
             # if the index is a MultiIndex each index name index value
             if isinstance(ix, (tuple, list)):
@@ -461,6 +494,7 @@ class IsolationForest:
             # create a centralized data-structure to feed into json.dumps(...)
             out.append(record)
         self._predictions = out
+        logging.info("Predictions OK")
         return out
 
     def predict_and_contrast(self, array, min_score=0.5, alpha=0.05):
@@ -486,15 +520,18 @@ class IsolationForest:
         preds = self.predict(this_data, min_score=min_score)
 
         # join original data with its predictions and group-by anomalous
+        logging.info("Joining predictions with features to drive contrasting")
         merged = pd.concat((this_data.reset_index(drop=True),
                             pd.DataFrame(preds)), axis=1)
+        logging.info("Merged data-set shape: {:,} x {:,}".format(*merged.shape))
 
         # group records by whether they are anomalous or not
         agg = merged.groupby("is_anomalous")
+        logging.info("Merged group names: {}".format(list(agg.groups.keys())))
 
         # contrasting requires two groups: those deemed anomalous versus normal
         if len(agg.groups) != 2:
-            raise ValueError("Cannot contrast; add data to contrast groups.")
+            raise ValueError("Contrast error; add data or increase sample_size")
 
         # get the "normal" data, i.e. those deemed not anomalous
         normal_subset = agg.get_group(False)
@@ -502,6 +539,7 @@ class IsolationForest:
 
             # if it is an anomaly, add the features that warrant this label
             if pred["is_anomalous"]:
+                logging.info("Contrasting features of anomaly: {}".format(pred))
                 its_data = dict(this_data.iloc[i])
                 anomalous_features = []
 
@@ -510,6 +548,8 @@ class IsolationForest:
                     vector = normal_subset[column]
                     pop_mean = vector.mean()
                     pop_std = vector.std()
+                    logging.info("Column: {}, x={}".format(column, sample_mean))
+                    logging.info("mu={}, sigma={}".format(pop_mean, pop_std))
 
                     # you cannot divide by zero
                     if pop_std == 0:
@@ -518,6 +558,7 @@ class IsolationForest:
                     # compute Z score and derive two-tailed p-value
                     z_score = (sample_mean - pop_mean) / pop_std
                     p_value = norm.sf(abs(z_score)) * 2
+                    logging.info("p-value: {}".format(p_value))
 
                     # add significant p-value feature to the prediction
                     if p_value < alpha:
@@ -528,24 +569,31 @@ class IsolationForest:
                                      "normal_stdev": pop_std
                                      }
                         anomalous_features.append(a_feature)
+                        logging.info("Enriched feature: {}".format(a_feature))
                 pred["anomalous_features"] = anomalous_features
                 pred["num_features"] = len(anomalous_features)
         self._predictions = preds
+        logging.info("Predictions and contrast OK")
         return preds
 
     def to_report(self):
 
         # read-in predictions as a pandas DataFrame
-        frame = pd.DataFrame.from_records(self._predictions)
+        preds = self._predictions
+        logging.info("Making frame given {} predictions".format(len(preds)))
+        frame = pd.DataFrame.from_records(preds)
 
         # determine those deemed anomalous from normal
         normal = frame[~frame["is_anomalous"]]["score"]
         anomalies = frame[frame["is_anomalous"]]["score"]
+        logging.info("# normal predictions: {}".format(len(normal)))
+        logging.info("# anomalous predictions: {}".format(len(anomalies)))
 
         out = {}
         header = "data:image/png;base64,"
 
         # figure 1 - a boxplot of anomaly score distributions
+        logging.info("Creating boxplot given such groups")
         plt.clf()
         plt.boxplot([normal.values, anomalies.values],
                     showfliers=True,
@@ -562,6 +610,7 @@ class IsolationForest:
         out["boxplot"] = header + boxplot_b64.decode("utf-8")
 
         # figure 2 - a basic histogram of score distributions
+        logging.info("Creating histogram given anomaly scores")
         plt.clf()
         histogram_io = BytesIO()
         plt.hist(frame["score"], bins=25)
@@ -572,6 +621,7 @@ class IsolationForest:
         histogram_b64 = base64.b64encode(histogram_io.read())
         out["histogram"] = header + histogram_b64.decode("utf-8")
 
+        logging.info("Reporting OK")
         return out
 
 
@@ -592,10 +642,12 @@ class IsolationTree:
         self.depth = depth  # depth
         self.data = np.asarray(data)
         self.num_records = len(data)
+        logging.info("# records: {:,} and depth: {}".format(len(data), depth))
 
         # list of N integers where N is the number of features
         self.column_positions = np.arange(self.data.shape[1])
         self.limit = limit  # depth limit
+        logging.info("Limit set to: {}".format(self.limit))
         self._value = None
 
         # a column number or position that is selected; from 0 to N
@@ -611,7 +663,9 @@ class IsolationTree:
         """
 
         self.depth = depth
+        logging.info("# records to recursively parse: {}".format(len(data)))
         if depth >= l or len(data) <= 1:
+            logging.info("Depth reached; at external node")
             left = None
             right = None
             self.num_external_nodes += 1
@@ -629,11 +683,14 @@ class IsolationTree:
 
             # step 1. pick a column number
             self._pos = self.rng.choice(self.column_positions)  # pick a column
+            logging.info("Column number selected: {:,}".format(self._pos))
 
             # step 2. select the minimum and maximum values in said-column
             min_ = data[:, self._pos].min()  # get min value from the column
             max_ = data[:, self._pos].max()  # get max value from the column
+            logging.info("Column min and max: {:,}...{:,}".format(min_, max_))
             if min_ == max_:
+                logging.info("Min and max are equal; at external node")
 
                 # if extrema are equal, such nodes lack descendants
                 left = None
@@ -650,6 +707,7 @@ class IsolationTree:
 
             # step 3. generate a random number between the min and max range
             self._value = self.rng.uniform(min_, max_)
+            logging.info("Real value between extrema: {}".format(self._value))
 
             # step 4. determine if values in said-column are less than the value
             truth = np.where(data[:, self._pos] < self._value, True, False)
@@ -657,6 +715,8 @@ class IsolationTree:
             # `left` are where values are less than value, `right` otherwise
             left = data[truth]
             right = data[~truth]
+            logging.info("# records as left node: {}".format(len(left)))
+            logging.info("# records as right node: {}".format(len(right)))
 
             # recursively repeat by propogating the left and right branches
             self.num_internal_nodes += 1
