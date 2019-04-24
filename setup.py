@@ -3,7 +3,7 @@ from setuptools import setup
 
 setup(
     name="rad",
-    version="0.9.3",
+    version="0.9.5",
     description="AI-Ops Red Hat Anomaly Detection (RAD)",
     author="Parsa Hosseini, Ph.D.",
     author_email="phossein@redhat.com",
@@ -14,9 +14,8 @@ setup(
                       "matplotlib",
                       "pandas",
                       "pyarrow",
-                      "requests",
                       "s3fs",
-                      "urllib3"],
+                      "urllib3<1.25,>=1.20"],
     tests_require=['pytest',
                    'pytest-cov'],
     setup_requires=["pytest-runner"],
