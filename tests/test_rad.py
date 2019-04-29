@@ -1,9 +1,14 @@
+import logging
 import unittest
 import numpy as np
 import pandas as pd
 from rad.rad import IsolationForest, IsolationTree, TreeScore
 
 from rad import rad
+
+
+# disable logging unless error is significant
+logging.disable(logging.ERROR)
 
 
 class TestC(unittest.TestCase):

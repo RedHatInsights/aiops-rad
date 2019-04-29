@@ -23,7 +23,7 @@ from scipy.stats import norm
 from collections import namedtuple
 
 
-__version__ = "0.9.5"
+__version__ = "0.9.6"
 
 
 # for modeling IsolationForest node instances
@@ -116,16 +116,21 @@ def fetch_s3(bucket, profile_name=None, folder=None, date=None,
     return frame
 
 
-def inventory_data_to_pandas(dic):
+def inventory_data_to_pandas(dic, target_features=None):
     """
     Parse a JSON object, fetched from the Host Inventory Service, and massage
     the data to serve as a pandas DataFrame. We define rows of this DataFrame
     as unique `display_name` instances, and individual column names being an
     individual "system fact" keyword within the `facts` key. Each row-column
     cell is the value for said system-fact.
+    To enrich such extraction, you could define `target_features` to explicitly
+    define what system facts you wish to extract. If this is not set, this list
+    is set to a predefined list of high-level system facts such as CPU count
+    and BIOS details.
 
     Args:
         dic (dict): dictionary from `fetch_fetch_inventory_data(...)`
+        target_features (list): features to explicitly fetch.
 
     Returns:
         DataFrame: each column is a feature and its cell is its value.
@@ -161,6 +166,23 @@ def inventory_data_to_pandas(dic):
         if len(facts) == 0:
             continue
 
+        # define some very high-level system facts
+        if not target_features:
+            target_features = ["system_properties.hostnames",
+                               "system_properties.memory_in_gb",
+                               "infrastructure.type",
+                               "infrastructure.vendor",
+                               "infrastructure.ipv4_addresses",
+                               "bios.vendor",
+                               "bios.version",
+                               "bios.release_date",
+                               "os.release",
+                               "os.kernel_release",
+                               "os.arch",
+                               "os.kernel_modules",
+                               "configuration.services"
+                               ]
+
         # data looks like this:
         # [{'facts': {'fqdn': '...'}, 'namespace': '...'}]
 
@@ -176,6 +198,11 @@ def inventory_data_to_pandas(dic):
 
             # iterate over all the key-value pairs for each `facts` item
             for k, v in fact["facts"].items():
+
+                # assert that system facts are in the explicit list
+                if k not in target_features:
+                    continue
+
                 logging.info("{} => {}".format(k, v))
 
                 # handling numeric values
@@ -342,7 +369,7 @@ class IsolationForest:
         table, mapping = preprocess(array)
         self.X = table
         self.mapping = mapping
-        self.num_records = len(array)
+        self.num_records = len(table)
         self.sample_size = sample_size
         self.trees = []
         self.limit = limit
@@ -351,7 +378,7 @@ class IsolationForest:
         logging.info("Sample size and limit: {}".format(sample_size, limit))
 
         # ensure that the data is truly numeric
-        if self.X.shape != self.X.select_dtypes(include=np.number).shape:
+        if table.shape != table.select_dtypes(include=np.number).shape:
             raise ValueError("Non-numeric features found. Try `preprocess`.")
 
         # ensure that sample_size is positive
@@ -369,7 +396,7 @@ class IsolationForest:
             # select so-many rows
             logging.info("Sampling {} records".format(self.sample_size))
             ix = self.rng.choice(range(self.num_records), self.sample_size)
-            subset = self.X.values[ix]
+            subset = table.values[ix]
             self.trees.append(IsolationTree(subset, 0, self.limit, seed=seed))
             logging.info("{} trees built OK".format(len(self.trees)))
 
