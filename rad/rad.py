@@ -23,7 +23,7 @@ from scipy.stats import norm
 from collections import namedtuple
 
 
-__version__ = "0.9.6"
+__version__ = "0.9.7"
 
 
 # for modeling IsolationForest node instances
@@ -116,7 +116,7 @@ def fetch_s3(bucket, profile_name=None, folder=None, date=None,
     return frame
 
 
-def inventory_data_to_pandas(dic, target_features=None):
+def inventory_data_to_pandas(dic):
     """
     Parse a JSON object, fetched from the Host Inventory Service, and massage
     the data to serve as a pandas DataFrame. We define rows of this DataFrame
@@ -130,139 +130,63 @@ def inventory_data_to_pandas(dic, target_features=None):
 
     Args:
         dic (dict): dictionary from `fetch_fetch_inventory_data(...)`
-        target_features (list): features to explicitly fetch.
 
     Returns:
         DataFrame: each column is a feature and its cell is its value.
     """
 
     # do some exception handling to make sure the right data is passed-in
-    if isinstance(dic, dict):
-        data = dic.get("results", [])
-    elif isinstance(dic, (list, tuple)):
-        data = dic
-    else:
-        raise TypeError("`dic` must an array or dict with `results` key.")
+    if not isinstance(dic, dict):
+        raise TypeError("`dic` must be of type dict")
 
-    # list of dictionary items for each and every row
+    # all system facts branch-off "results"
+    if "results" not in dic:
+        raise IOError("Ensure `dic` has a `results` key before continuing.")
+
+    # iterate over the `results` since these contain system facts or profiles
     rows = []
+    for i, result in enumerate(dic["results"], start=1):
 
-    # iterate over all records; all data resides under the `results` key
-    for record in data:
+        # each `result` must have an "id" and "system_profile"
+        system_id = result.get("id")
+        system_profile = result.get("system_profile")
 
-        # assert that `facts` and `account` are keys, otherwise throw error
-        if "facts" not in record:
-            raise IOError("JSON must contain `facts` key under `results`")
-        if "account" not in record:
-            raise IOError("JSON must contain `account` key under `results`")
+        # all `result` instances must have an "id" key
+        if system_id is None:
+            raise IOError("Result number {} lacks an `id` key".format(i))
 
-        # get some preliminary data; `id` is unique, `display_name` is not
-        facts = record["facts"]
-        ix = str(record["id"])
-        display = str(record["display_name"])
-        logging.info("Getting system facts for {}".format(ix))
+        # all `result` instances must have a "system_profile" key
+        if system_profile is None:
+            raise IOError("Result number {} lacks `system_profile`".format(i))
 
-        # systems lacking data lack column, so you measuring such will be tough
-        if len(facts) == 0:
-            continue
+        # all "system_profile" entries must be dictionary data-structures.
+        if not isinstance(system_profile, dict):
+            raise TypeError("Ensure `system_profile` is a dict.")
 
-        # define some very high-level system facts
-        if not target_features:
-            target_features = ["system_properties.hostnames",
-                               "system_properties.memory_in_gb",
-                               "infrastructure.type",
-                               "infrastructure.vendor",
-                               "infrastructure.ipv4_addresses",
-                               "bios.vendor",
-                               "bios.version",
-                               "bios.release_date",
-                               "os.release",
-                               "os.kernel_release",
-                               "os.arch",
-                               "os.kernel_modules",
-                               "configuration.services"
-                               ]
+        # begin by adding the system identifier
+        row = {"id": system_id}
 
-        # data looks like this:
-        # [{'facts': {'fqdn': '...'}, 'namespace': '...'}]
+        for key, value in system_profile.items():
 
-        # iterate over all the elements in `facts`
-        for fact in facts:
-            if not isinstance(fact, dict):
-                msg = "`facts` must dict, i.e. {'facts': {'fqdn': '...'}}"
-                raise IOError(msg)
+            # handle system flags which are scalars
+            if isinstance(value, (str, bool, float, int)):
+                row.update({key: value})
 
-            if "facts" not in fact:
-                raise KeyError("`facts` key must reside in the dictionary")
-            logging.info("{} fact(s) found".format(len(fact["facts"])))
+            # handle system flags where all elements are not dict; easy parsing
+            elif isinstance(value, list):
+                lacks_dict = all(map(lambda x: not isinstance(x, dict), value))
+                if lacks_dict:
+                    keys = list(map(lambda x: key + "|" + x, value))
+                    row.update({}.fromkeys(keys, True))
 
-            # iterate over all the key-value pairs for each `facts` item
-            for k, v in fact["facts"].items():
+        # append the individual row
+        rows.append(pd.Series(row))
 
-                # assert that system facts are in the explicit list
-                if k not in target_features:
-                    continue
+    if len(rows) == 0:
+        raise ValueError("No data was parsed. Ensure data is present.")
 
-                logging.info("{} => {}".format(k, v))
-
-                # handling numeric values
-                if isinstance(v, (int, float, bool)):
-                    v = float(v)
-                    rows.append({"id": ix,
-                                 "display_name": display,
-                                 "value": v,
-                                 "col": k})
-
-                # if a collection, each collection item is its own feature
-                elif isinstance(v, (list, tuple)):
-                    for v_ in v:
-                        # some larger `v_` instances are collections; ignore
-                        if isinstance(v_, (dict, list)):
-                            continue
-                        rows.append({"id": ix,
-                                     "display_name": display,
-                                     "value": True,
-                                     "col": "{}|{}".format(k, v_)})
-
-                # handling strings is trivial
-                elif isinstance(v, str):
-                    rows.append({"id": ix,
-                                 "display_name": display,
-                                 "value": v,
-                                 "col": k})
-
-                # sometimes, values are `dict`, so handle accordingly
-                elif isinstance(v, dict):
-                    for k_, v_ in v.items():
-                        # some larger `v_` instances are collections; ignore
-                        if isinstance(v_, (dict, list)):
-                            continue
-                        rows.append({"id": ix,
-                                     "display_name": display,
-                                     "value": v_,
-                                     "col": k_})
-
-                # end-case; useful if key has column but its value is NaN / None
-                else:
-                    rows.append({"id": ix,
-                                 "display_name": display,
-                                 "value": -1,
-                                 "col": k})
-
-    # take all the newly-added data and make it into a DataFrame
-    frame = pd.DataFrame(rows)
-    logging.info("# data-points parsed: {:,}".format(len(frame)))
-
-    if len(frame) == 0:
-        raise IOError("No data present. Ensure `dic` has valid data.")
-
-    # pivot the data and set `display_name` and `id` as its columns
-    frame = pd.pivot_table(frame,
-                           values="value",
-                           index=["id", "display_name"],
-                           columns="col",
-                           aggfunc="first")
-    logging.info("Tabular shape: {:,} x {:,}".format(*frame.shape))
+    # concatenate all the individual rows into one singular DataFrame
+    frame = pd.concat(rows, axis=1, sort=False).T.set_index("id")
     return frame
 
 
@@ -312,37 +236,6 @@ def preprocess(frame, index=None, drop=None):
 
     # return the DataFrame and categorical mappings
     return df, mappings
-
-
-def preprocess_on(frame, on, min_records=50, index=None, drop=None):
-    """
-    Similar to `preprocess` but groups records in the DataFrame on a group pf
-    features. Each respective chunk or block is then added to a list; analogous
-    to running `preprocess` on a desired subset of a DataFrame.
-
-    Args:
-        frame (DataFrame): pandas DataFrame
-        on (str or list): features in `frame` you wish to group around.
-        min_records (int): minimum number of rows each grouped chunk must have.
-        index (str or list): columns to serve as DataFrame index.
-        drop (str or list): columns to drop from the DataFrame.
-
-    Returns:
-         DataFrame and dict: processed DataFrame and encodings of its columns.
-    """
-
-    data, mapping = preprocess(frame, index, drop)
-    out = []
-
-    # group-by `on` and return the chunks which satisfy minimum length
-    for _, chunk in data.groupby(on):
-        if len(chunk) > min_records:
-
-            # if only `on` is provided, set this as the index
-            if index is None and on is not None:
-                index = on
-            out.append((chunk, mapping))
-    return out
 
 
 class IsolationForest:

@@ -103,30 +103,6 @@ class TestPreprocess(unittest.TestCase):
         self.assertEqual(frame.index.name, column)
 
 
-class TestPreprocessOn(unittest.TestCase):
-
-    def setUp(self):
-        size = np.random.randint(1, 100, size=2)
-        data = np.random.randint(-100000, 100000, size)
-        self.frame = pd.DataFrame(data)
-        self.frame["groups"] = np.random.choice(["a", "b"], len(self.frame))
-
-    def test_preprocess_on_output_equals_num_groups(self):
-        """
-        Test that the number of chunks from `preprocess_on` equals the number
-        of groups, i.e. ["A", "B", "C", ...]
-        """
-        uniq_groups = np.unique(self.frame["groups"])
-        chunks = rad.preprocess_on(self.frame, on="groups", min_records=0)
-        self.assertEqual(len(chunks), len(uniq_groups))
-
-    def test_preprocess_on_group_must_exist(self):
-        """
-        Test that an invalid column set for `on` raises KeyError exception
-        """
-        self.assertRaises(KeyError, rad.preprocess_on, self.frame, "bad column")
-
-
 class TestIsolationForest(unittest.TestCase):
 
     @classmethod
