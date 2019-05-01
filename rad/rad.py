@@ -135,7 +135,7 @@ def inventory_data_to_pandas(dic, *args):
             unique_keys.add(key)
 
             # ensure the system profile is the one desired
-            if key not in args and len(args) != 0:
+            if args and key not in args:
                 continue
 
             # handle system flags which are scalars
