@@ -20,7 +20,7 @@ from scipy.stats import norm
 from collections import namedtuple
 
 
-__version__ = "0.9.7"
+__version__ = "0.9.8"
 
 
 # for modeling IsolationForest node instances
