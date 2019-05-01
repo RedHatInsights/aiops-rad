@@ -20,7 +20,7 @@ from scipy.stats import norm
 from collections import namedtuple
 
 
-__version__ = "0.9.8"
+__version__ = "0.9.9"
 
 
 # for modeling IsolationForest node instances
@@ -47,7 +47,7 @@ def c(n):
     Returns:
         average length of an unsuccessful binary search query.
     """
-    logging.info("Computing BST length given n={}".format(n))
+    logging.debug("Computing BST length given n={}".format(n))
     if n <= 0:
         raise ValueError("`n` must be positive; length cannot be negative.")
     euler_constant = 0.5772156649
@@ -72,7 +72,7 @@ def s(x, n):
     Returns:
         anomaly score between 0 and 1.
     """
-    logging.info("Computing anomaly score given x={}, n={}".format(x, n))
+    logging.debug("Computing anomaly score given x={}, n={}".format(x, n))
     return 2.0 ** (-x / c(n))
 
 
@@ -129,6 +129,7 @@ def inventory_data_to_pandas(dic, *args):
 
         # begin by adding the system identifier
         row = {"id": system_id}
+        logging.debug("{} w/{} facts(s)".format(system_id, len(system_profile)))
 
         for key, value in system_profile.items():
             unique_keys.add(key)
@@ -253,10 +254,10 @@ class IsolationForest:
             logging.info("New limit set to {}".format(self.limit))
 
         # train a tree around a subset of the data, hence ensemble
+        logging.info("Sampling {} records".format(self.sample_size))
         for _ in range(self.num_trees):
 
             # select so-many rows
-            logging.info("Sampling {} records".format(self.sample_size))
             ix = self.rng.choice(range(self.num_records), self.sample_size)
             subset = table.values[ix]
             self.trees.append(IsolationTree(subset, 0, self.limit, seed=seed))
@@ -351,17 +352,17 @@ class IsolationForest:
 
         # generate an anomaly score for each row in the dataset, array
         for ix, row in data.iterrows():
-            logging.info("Computing score for `{}` across trees".format(ix))
+            logging.debug("Computing score for `{}` across trees".format(ix))
 
             # for each record, i, find out its depth in each tree, j
             depth = 0
             for j in range(self.num_trees):
                 depth += float(TreeScore(row.values, self.trees[j]).path)
-            logging.info("Depth: {}".format(depth))
+            logging.debug("Depth: {}".format(depth))
 
             # scale the depth by the total number of trees
             depth_scaled = depth / self.num_trees
-            logging.info("Scaled depth: {}".format(depth_scaled))
+            logging.debug("Scaled depth: {}".format(depth_scaled))
 
             # output a `score` and `depth` per record
             score = s(depth_scaled, self.sample_size)
