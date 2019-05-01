@@ -8,8 +8,6 @@ Much of the algorithms in this module are from the works of Liu et al.
 (https://cs.nju.edu.cn/zhouzh/zhouzh.files/publication/icdm08b.pdf)
 """
 
-import os
-import s3fs
 import pickle
 import base64
 import logging
@@ -18,7 +16,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from io import BytesIO
-from pyarrow import parquet
 from scipy.stats import norm
 from collections import namedtuple
 
@@ -79,44 +76,7 @@ def s(x, n):
     return 2.0 ** (-x / c(n))
 
 
-def fetch_s3(bucket, profile_name=None, folder=None, date=None,
-             endpoint=None, workers=None):
-    """
-    Queries data collected from Insights that is saved in S3. It is presumed
-    `profile_name` (your ~/.aws/credentials name) exhibits credentials to
-    facilitate such an access.
-
-    Args:
-         endpoint (str): S3 endpoint.
-         profile_name (str): AWS credentials; found in ~/.aws/credentials
-         bucket (str): S3 bucket name.
-         folder (str): folder name; contains many parquet files
-         date (str): S3 prefix; is that which is prepended to `bucket`.
-         workers (int): maximum number of worker threads.
-    """
-    if not profile_name:
-        profile_name = "default"
-
-    if not endpoint:
-        endpoint = "https://s3.upshift.redhat.com"
-
-    if not date:
-        date = ""
-
-    if not folder:
-        folder = ""
-
-    fs = s3fs.S3FileSystem(profile_name=profile_name,
-                           client_kwargs={"endpoint_url": endpoint})
-
-    # concatenate the bucket and all subsequent variables to give a full path
-    path = os.path.join(bucket, date, folder)
-    obj = parquet.ParquetDataset(path, fs, metadata_nthreads=workers)
-    frame = obj.read_pandas().to_pandas()
-    return frame
-
-
-def inventory_data_to_pandas(dic):
+def inventory_data_to_pandas(dic, *args):
     """
     Parse a JSON object, fetched from the Host Inventory Service, and massage
     the data to serve as a pandas DataFrame. We define rows of this DataFrame
@@ -130,6 +90,7 @@ def inventory_data_to_pandas(dic):
 
     Args:
         dic (dict): dictionary from `fetch_fetch_inventory_data(...)`
+        args (list): collection of "system_profile" keys wishing to be parsed
 
     Returns:
         DataFrame: each column is a feature and its cell is its value.
@@ -142,6 +103,9 @@ def inventory_data_to_pandas(dic):
     # all system facts branch-off "results"
     if "results" not in dic:
         raise IOError("Ensure `dic` has a `results` key before continuing.")
+
+    # unique set of system facts; for logging purposes only
+    unique_keys = set()
 
     # iterate over the `results` since these contain system facts or profiles
     rows = []
@@ -167,6 +131,11 @@ def inventory_data_to_pandas(dic):
         row = {"id": system_id}
 
         for key, value in system_profile.items():
+            unique_keys.add(key)
+
+            # ensure the system profile is the one desired
+            if key not in args and len(args) != 0:
+                continue
 
             # handle system flags which are scalars
             if isinstance(value, (str, bool, float, int)):
@@ -182,11 +151,11 @@ def inventory_data_to_pandas(dic):
         # append the individual row
         rows.append(pd.Series(row))
 
-    if len(rows) == 0:
-        raise ValueError("No data was parsed. Ensure data is present.")
-
     # concatenate all the individual rows into one singular DataFrame
+    logging.info("Facts parsed: {}".format(sorted(unique_keys)))
     frame = pd.concat(rows, axis=1, sort=False).T.set_index("id")
+    if frame.size == 0:
+        raise ValueError("No data was parsed. Verify data or validity of *args")
     return frame
 
 
