@@ -4,8 +4,6 @@ anomaly detection tasks in-support of the AI-Ops effort. RAD leverages the
 Isolation Forest (IF) ensemble data-structure; a class that partitions a
 data-set and leverages such slicing to gauge magnitude of anomaly. In other
 words, the more partitions, the more "normal" the record.
-Much of the algorithms in this module are from the works of Liu et al.
-(https://cs.nju.edu.cn/zhouzh/zhouzh.files/publication/icdm08b.pdf)
 """
 
 import pickle
@@ -16,11 +14,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from io import BytesIO
-from scipy.stats import norm
 from sklearn.ensemble import IsolationForest
 
 
-__version__ = "0.9.9"
+__version__ = "0.10"
 
 
 logging.basicConfig(format="%(asctime)s | "+\
@@ -164,6 +161,13 @@ def preprocess(frame, index=None, drop=None):
 
 
 class RADIsolationForest(IsolationForest):
+    """
+    Extends the scikit-learn IsolationForest class by providing additional
+    methods that "contrast" feature value across normal and anomaly groups.
+
+    Args:
+        kwargs (dict): Keyword arguments used by scikit-learn IsolationForest
+    """
 
     def __init__(self, **kwargs):
         super(RADIsolationForest, self).__init__(**kwargs)
@@ -235,12 +239,28 @@ class RADIsolationForest(IsolationForest):
             raise ValueError("Argument must model an IsolationForest")
         return forest
 
-    def fit_predict(self, X):
+    def fit_predict(self, X, y=None):
+        """
+        Fits data to the current model and execute prediction.
+
+        Args:
+            X (array): A n x d array such as DataFrame or ndarray.
+            y (list): An optional array to model class.
+
+        Returns:
+            list: `score` and `is_anomalous` keys.
+        """
+
+        # fit the data to the current object
         data = pd.DataFrame(X)
-        self.fit(data)
+        self.fit(data, y)
+
+        # execute prediction by returning scores and its labels (1 or -1)
         labels = super(RADIsolationForest, self).predict(data)
         labels = np.where(labels == -1, True, False)
         scores = self.score_samples(data)
+
+        # iterate over all rows and return list having score and if anomalous
         out = []
         if data.index.name is None:
             data.index.name = "id"
@@ -258,7 +278,21 @@ class RADIsolationForest(IsolationForest):
             out.append(record)
         return out
 
-    def fit_predict_contrast(self, X, training_frame, alpha=0.05):
+    def fit_predict_contrast(self, X, training_frame, min_fc=1):
+        """
+        Performs both model fitting and prediction as well as contrasting.
+        Contrasting works by determining if a row's feature value, if anomalous,
+        is deemed statistically significant or not.
+
+        Args:
+            X (array): A n x d array such as DataFrame or ndarray.
+            training_frame (DataFrame): Frame for training the model; baseline.
+            min_fc (float): minimum log-2 fold-change cutoff.
+
+        Returns:
+            list: `score` and `is_anomalous` keys plus others after contrast.
+
+        """
 
         # generate predictions for this respective data-set
         this_data = pd.DataFrame(training_frame)
@@ -290,31 +324,67 @@ class RADIsolationForest(IsolationForest):
                 for column, sample_mean in its_data.items():
                     vector = normal_subset[column]
                     pop_mean = vector.mean()
-                    pop_std = vector.std()
 
-                    logging.info("Column: {}, x={}".format(column, sample_mean))
-                    logging.info("mu={}, sigma={}".format(pop_mean, pop_std))
-
-                    # you cannot divide by zero
-                    # if pop_std == 0:
-                    #     continue
-
-                    # compute Z score and derive two-tailed p-value
-                    z_score = (sample_mean - pop_mean) / max((pop_std, 1))
-                    p_value = norm.sf(abs(z_score)) * 2
-                    logging.info("p-value: {}".format(p_value))
-
-                    # add significant p-value feature to the prediction
-                    if p_value < alpha:
+                    # compute log-2 fold-change
+                    fc = np.log2(sample_mean / pop_mean)
+                    if abs(fc) >= min_fc or np.isinf(abs(fc)):
                         a_feature = {"feature": column,
-                                     "pvalue": float(p_value),
-                                     "observed_value": float(sample_mean),
-                                     "normal_mean": float(pop_mean),
-                                     "normal_stdev": float(pop_std)
-                                     }
+                                     "fold_change": fc,
+                                     "observed_value": sample_mean,
+                                     "normal_mean": pop_mean}
                         anomalous_features.append(a_feature)
-                        logging.info("Enriched feature: {}".format(a_feature))
+                    logging.info("Column: {}, x={}".format(column, sample_mean))
+                    logging.info("mu={}".format(pop_mean))
                 pred["anomalous_features"] = anomalous_features
                 pred["num_features"] = len(anomalous_features)
         logging.info("Predictions and contrast OK")
+        self._predictions = preds
         return preds
+
+    def to_report(self):
+
+        # read-in predictions as a pandas DataFrame
+        preds = self._predictions
+        logging.info("Making frame given {} predictions".format(len(preds)))
+        frame = pd.DataFrame.from_records(preds)
+
+        # determine those deemed anomalous from normal
+        normal = frame[~frame["is_anomalous"]]["score"]
+        anomalies = frame[frame["is_anomalous"]]["score"]
+        logging.info("# normal predictions: {}".format(len(normal)))
+        logging.info("# anomalous predictions: {}".format(len(anomalies)))
+
+        out = {}
+        header = "data:image/png;base64,"
+
+        # figure 1 - a boxplot of anomaly score distributions
+        logging.info("Creating boxplot given such groups")
+        plt.clf()
+        plt.boxplot([normal.values, anomalies.values],
+                    showfliers=True,
+                    showmeans=True)
+        plt.xticks([1, 2], ["Normal", "Anomaly"])
+        plt.xlabel("Group")
+        plt.ylabel("Anomaly Score")
+
+        # model the first plot
+        boxplot_io = BytesIO()
+        plt.savefig(boxplot_io, format="png")
+        boxplot_io.seek(0)
+        boxplot_b64 = base64.b64encode(boxplot_io.read())
+        out["boxplot"] = header + boxplot_b64.decode("utf-8")
+
+        # figure 2 - a basic histogram of score distributions
+        logging.info("Creating histogram given anomaly scores")
+        plt.clf()
+        histogram_io = BytesIO()
+        plt.hist(frame["score"], bins=25)
+        plt.ylabel("Count")
+        plt.xlabel("Anomaly Score")
+        plt.savefig(histogram_io, format="png")
+        histogram_io.seek(0)
+        histogram_b64 = base64.b64encode(histogram_io.read())
+        out["histogram"] = header + histogram_b64.decode("utf-8")
+
+        logging.info("Reporting OK")
+        return out
