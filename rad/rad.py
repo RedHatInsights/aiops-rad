@@ -4,8 +4,6 @@ anomaly detection tasks in-support of the AI-Ops effort. RAD leverages the
 Isolation Forest (IF) ensemble data-structure; a class that partitions a
 data-set and leverages such slicing to gauge magnitude of anomaly. In other
 words, the more partitions, the more "normal" the record.
-Much of the algorithms in this module are from the works of Liu et al.
-(https://cs.nju.edu.cn/zhouzh/zhouzh.files/publication/icdm08b.pdf)
 """
 
 import pickle
@@ -16,64 +14,18 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from io import BytesIO
-from scipy.stats import norm
-from collections import namedtuple
+from sklearn.ensemble import IsolationForest
 
 
-__version__ = "0.9.9"
+__version__ = "0.10"
 
-
-# for modeling IsolationForest node instances
-Node = namedtuple("Node",
-                  ['data', 'size', 'pos', 'value', 'depth', 'left', 'right',
-                   'type'])
 
 logging.basicConfig(format="%(asctime)s | "+\
                            "%(funcName)s | "+\
                            "#%(lineno)d | "+\
                            "%(levelname)s | "+\
                            "%(message)s",
-                    level=logging.INFO)
-
-
-def c(n):
-    """
-    The average length of an unsuccessful binary search query. Note that this
-    function is the same as Equation 1 of Isolation Forest manuscript.
-
-    Args:
-        n (int): number of records; same as `sample_size` in `IsolationForest`
-
-    Returns:
-        average length of an unsuccessful binary search query.
-    """
-    logging.debug("Computing BST length given n={}".format(n))
-    if n <= 0:
-        raise ValueError("`n` must be positive; length cannot be negative.")
-    euler_constant = 0.5772156649
-    h = np.log(n) + euler_constant  # Harmonic number
-    return 2.*h - (2.*(n-1)/n)
-
-
-def s(x, n):
-    """
-    Compute the anomaly score, s. Note that this function is the same as
-    Equation 2 of the Isolation Forest manuscript. Such values range between
-    0 to 1; those near 0 are deemed "normal", while values near 1 are deemed
-    "anomalous". Generally, values > 0.5 are viable anomalous candidates.
-    Along these lines, we assert that the smaller `x` is, aka. shorter path,
-    the more anomalous. In contrast, the larger `x` is, the longer the path
-    since said-record needs more partitions to isolate it on its own.
-
-    Args:
-        x (float): scaled depth; equals cumulative depth of data / num_trees
-        n (int): number of records; same as `sample_size` in `IsolationForest`
-
-    Returns:
-        anomaly score between 0 and 1.
-    """
-    logging.debug("Computing anomaly score given x={}, n={}".format(x, n))
-    return 2.0 ** (-x / c(n))
+                    level=logging.WARNING)
 
 
 def inventory_data_to_pandas(dic, *args):
@@ -208,60 +160,20 @@ def preprocess(frame, index=None, drop=None):
     return df, mappings
 
 
-class IsolationForest:
+class RADIsolationForest(IsolationForest):
     """
-    Constructs an ensemble anomaly detection data-structure known as an
-    IsolationForest, or IF. How an IF works is by partitioning a user-specified
-    data-set into and defining magnitude of anomaly to be inversely proportional
-    to the number of slices or partitions. The reasoning here is that an
-    anomalous record would require fewer slices to be isolated on its own,
-    compared to a "normal" or expected record.
-    Much of this logic is inspired by https://github.com/mgckind/iso_forest
+    Extends the scikit-learn IsolationForest class by providing additional
+    methods that "contrast" feature value across normal and anomaly groups.
 
     Args:
-        array (ndarray): numeric array comprised of N records.
-        num_trees (int): number of trees to make in this ensemble.
-        sample_size (int): number of records randomly selected per tree.
-        limit (int): maximum tree depth.
-        seed (int): random number generator seed.
+        kwargs (dict): Keyword arguments used by scikit-learn IsolationForest
     """
-    def __init__(self, array, num_trees=150, sample_size=30, limit=None,
-                 seed=None):
-        logging.info("Building forest with {} tree(s)".format(num_trees))
-        self.num_trees = num_trees
-        table, mapping = preprocess(array)
-        self.X = table
-        self.mapping = mapping
-        self.num_records = len(table)
-        self.sample_size = sample_size
-        self.trees = []
-        self.limit = limit
-        self.rng = np.random.RandomState(seed)
-        self._predictions = None
-        logging.info("Sample size and limit: {}".format(sample_size, limit))
 
-        # ensure that the data is truly numeric
-        if table.shape != table.select_dtypes(include=np.number).shape:
-            raise ValueError("Non-numeric features found. Try `preprocess`.")
+    def __init__(self, **kwargs):
+        super(RADIsolationForest, self).__init__(**kwargs)
 
-        # ensure that sample_size is positive
-        if sample_size <= 0:
-            raise ValueError("`sample_size` must be positive")
-
-        # set the height limit
-        if limit is None:
-            self.limit = int(np.ceil(np.log2(self.sample_size)))
-            logging.info("New limit set to {}".format(self.limit))
-
-        # train a tree around a subset of the data, hence ensemble
-        logging.info("Sampling {} records".format(self.sample_size))
-        for _ in range(self.num_trees):
-
-            # select so-many rows
-            ix = self.rng.choice(range(self.num_records), self.sample_size)
-            subset = table.values[ix]
-            self.trees.append(IsolationTree(subset, 0, self.limit, seed=seed))
-            logging.info("{} trees built OK".format(len(self.trees)))
+    def _set_oob_score(self, X, y):
+        super(RADIsolationForest, self)._set_oob_score(X, y)
 
     @staticmethod
     def dump(forest, out_file):
@@ -327,93 +239,68 @@ class IsolationForest:
             raise ValueError("Argument must model an IsolationForest")
         return forest
 
-    def predict(self, array, min_score=0.5):
+    def fit_predict(self, X, y=None):
         """
-        Given a new user-provided array, generate an anomaly score. Such scores
-        range from 0 to 1; values near 0 are not anomalous, while values near
-        1 would be interesting from an anomaly standpoint.
+        Fits data to the current model and execute prediction.
 
         Args:
-            array (ndarray): numeric array comprised of N records.
-            min_score (float): minimum-allowable score to be labeled an anomaly.
+            X (array): A n x d array such as DataFrame or ndarray.
+            y (list): An optional array to model class.
 
         Returns:
-            out: array that contains the `id`, `score`, and `depth` per record.
+            list: `score` and `is_anomalous` keys.
         """
-        logging.info("Input query data-set: {} x {}".format(*array.shape))
-        data, mapping = preprocess(array)
 
-        # if an ndarray or DataFrame lacking index-name is given, set index name
-        if data.index.names == [None]:
-            data.index.names = ["id"]
+        # fit the data to the current object
+        data = pd.DataFrame(X)
+        self.fit(data, y)
 
-        # for keeping track of anomaly scores
+        # execute prediction by returning scores and its labels (1 or -1)
+        labels = super(RADIsolationForest, self).predict(data)
+        labels = np.where(labels == -1, True, False)
+        scores = self.score_samples(data)
+
+        # iterate over all rows and return list having score and if anomalous
         out = []
+        if data.index.name is None:
+            data.index.name = "id"
 
-        # generate an anomaly score for each row in the dataset, array
-        for ix, row in data.iterrows():
-            logging.debug("Computing score for `{}` across trees".format(ix))
-
-            # for each record, i, find out its depth in each tree, j
-            depth = 0
-            for j in range(self.num_trees):
-                depth += float(TreeScore(row.values, self.trees[j]).path)
-            logging.debug("Depth: {}".format(depth))
-
-            # scale the depth by the total number of trees
-            depth_scaled = depth / self.num_trees
-            logging.debug("Scaled depth: {}".format(depth_scaled))
-
-            # output a `score` and `depth` per record
-            score = s(depth_scaled, self.sample_size)
-
-            # each record (row) has a score and depth
-            record = {"score": score,
-                      "depth": depth_scaled,
-                      "is_anomalous": bool(score > min_score)}
-            logging.info("Outcome: {}".format(record))
+        for i in range(len(X)):
+            record = {"score": float(scores[i]),
+                      "is_anomalous": bool(labels[i])}
+            ix = data.index[i]
 
             # if the index is a MultiIndex each index name index value
             if isinstance(ix, (tuple, list)):
                 record.update(zip(data.index.names, ix))
-
-            # otherwise, the index is just an Index, so map this one name
             else:
                 record.update({data.index.name: ix})
-
-            # create a centralized data-structure to feed into json.dumps(...)
             out.append(record)
-        self._predictions = out
-        logging.info("Predictions OK")
         return out
 
-    def predict_and_contrast(self, array, min_score=0.5, alpha=0.05):
+    def fit_predict_contrast(self, X, training_frame, min_fc=1):
         """
-        Performs both `predict` and contrasts features which are enriched in
-        the anomalous group compared to the "normal" group. Thus, you can
-        isolate features that are enriched. The way such contrasting works is
-        by deriving the Z-score, (x - u / s), where x is the value of each
-        anomalous value, u is the mean of all normal values in said-feature,
-        and s is its corresponding standard deviation.
+        Performs both model fitting and prediction as well as contrasting.
+        Contrasting works by determining if a row's feature value, if anomalous,
+        is deemed statistically significant or not.
 
         Args:
-            array (ndarray): numeric array comprised of N records.
-            min_score (float): minimum-allowable score to be labeled an anomaly.
-            alpha (float): p-value cutoff.
+            X (array): A n x d array such as DataFrame or ndarray.
+            training_frame (DataFrame): Frame for training the model; baseline.
+            min_fc (float): minimum log-2 fold-change cutoff.
 
         Returns:
-            out: array that contains the `id`, `score`, and `depth` per record.
+            list: `score` and `is_anomalous` keys plus others after contrast.
+
         """
 
         # generate predictions for this respective data-set
-        this_data = pd.DataFrame(array)
-        preds = self.predict(this_data, min_score=min_score)
+        this_data = pd.DataFrame(training_frame)
+        preds = self.fit_predict(X)
 
         # join original data with its predictions and group-by anomalous
-        logging.info("Joining predictions with features to drive contrasting")
         merged = pd.concat((this_data.reset_index(drop=True),
                             pd.DataFrame(preds)), axis=1)
-        logging.info("Merged data-set shape: {:,} x {:,}".format(*merged.shape))
 
         # group records by whether they are anomalous or not
         agg = merged.groupby("is_anomalous")
@@ -437,33 +324,21 @@ class IsolationForest:
                 for column, sample_mean in its_data.items():
                     vector = normal_subset[column]
                     pop_mean = vector.mean()
-                    pop_std = vector.std()
-                    logging.info("Column: {}, x={}".format(column, sample_mean))
-                    logging.info("mu={}, sigma={}".format(pop_mean, pop_std))
 
-                    # you cannot divide by zero
-                    if pop_std == 0:
-                        continue
-
-                    # compute Z score and derive two-tailed p-value
-                    z_score = (sample_mean - pop_mean) / pop_std
-                    p_value = norm.sf(abs(z_score)) * 2
-                    logging.info("p-value: {}".format(p_value))
-
-                    # add significant p-value feature to the prediction
-                    if p_value < alpha:
+                    # compute log-2 fold-change
+                    fc = np.log2(sample_mean / pop_mean)
+                    if abs(fc) >= min_fc or np.isinf(abs(fc)):
                         a_feature = {"feature": column,
-                                     "pvalue": p_value,
+                                     "fold_change": fc,
                                      "observed_value": sample_mean,
-                                     "normal_mean": pop_mean,
-                                     "normal_stdev": pop_std
-                                     }
+                                     "normal_mean": pop_mean}
                         anomalous_features.append(a_feature)
-                        logging.info("Enriched feature: {}".format(a_feature))
+                    logging.info("Column: {}, x={}".format(column, sample_mean))
+                    logging.info("mu={}".format(pop_mean))
                 pred["anomalous_features"] = anomalous_features
                 pred["num_features"] = len(anomalous_features)
-        self._predictions = preds
         logging.info("Predictions and contrast OK")
+        self._predictions = preds
         return preds
 
     def to_report(self):
@@ -513,154 +388,3 @@ class IsolationForest:
 
         logging.info("Reporting OK")
         return out
-
-
-class IsolationTree:
-    """
-    An individual component of an `IsolationForest`, hence IsolationTree. An
-    IsolationForest will have many IsolationTree instances, each modeling a
-    subset of the data. Ideally, end-users should not interface with this class
-    directly; much of the work is orchestrated through an IsolationForest.
-
-    Args:
-        data (ndarray): numeric; X records (X = IsolationForest.sample_size)
-        depth (int): the depth of the current object.
-        limit (int): maximum limit of the current object.
-        seed (int): random number generator seed.
-    """
-    def __init__(self, data, depth, limit, seed=None):
-        self.depth = depth  # depth
-        self.data = np.asarray(data)
-        self.num_records = len(data)
-        logging.info("# records: {:,} and depth: {}".format(len(data), depth))
-
-        # list of N integers where N is the number of features
-        self.column_positions = np.arange(self.data.shape[1])
-        self.limit = limit  # depth limit
-        logging.info("Limit set to: {}".format(self.limit))
-        self._value = None
-
-        # a column number or position that is selected; from 0 to N
-        self._pos = None
-        self.num_external_nodes = 0
-        self.num_internal_nodes = 0
-        self.rng = np.random.RandomState(seed)
-        self.root = self._populate(data, depth, limit)
-
-    def _populate(self, data, depth, l):
-        """
-        Recursively populate the tree; akin to extension of the tree.
-        """
-
-        self.depth = depth
-        logging.info("# records to recursively parse: {}".format(len(data)))
-        if depth >= l or len(data) <= 1:
-            logging.info("Depth reached; at external node")
-            left = None
-            right = None
-            self.num_external_nodes += 1
-
-            # add terminal node (leaf node)
-            return Node(data=data,
-                        size=len(data),
-                        pos=self._pos,
-                        value=self._value,
-                        depth=depth,
-                        left=left,
-                        right=right,
-                        type='external')
-        else:
-
-            # step 1. pick a column number
-            self._pos = self.rng.choice(self.column_positions)  # pick a column
-            logging.info("Column number selected: {:,}".format(self._pos))
-
-            # step 2. select the minimum and maximum values in said-column
-            min_ = data[:, self._pos].min()  # get min value from the column
-            max_ = data[:, self._pos].max()  # get max value from the column
-            logging.info("Column min and max: {:,}...{:,}".format(min_, max_))
-            if min_ == max_:
-                logging.info("Min and max are equal; at external node")
-
-                # if extrema are equal, such nodes lack descendants
-                left = None
-                right = None
-                self.num_external_nodes += 1
-                return Node(data=data,
-                            size=len(data),
-                            pos=self._pos,
-                            value=self._value,
-                            depth=depth,
-                            left=left,
-                            right=right,
-                            type='external')
-
-            # step 3. generate a random number between the min and max range
-            self._value = self.rng.uniform(min_, max_)
-            logging.info("Real value between extrema: {}".format(self._value))
-
-            # step 4. determine if values in said-column are less than the value
-            truth = np.where(data[:, self._pos] < self._value, True, False)
-
-            # `left` are where values are less than value, `right` otherwise
-            left = data[truth]
-            right = data[~truth]
-            logging.info("# records as left node: {}".format(len(left)))
-            logging.info("# records as right node: {}".format(len(right)))
-
-            # recursively repeat by propogating the left and right branches
-            self.num_internal_nodes += 1
-            return Node(data=data,
-                        size=len(data),
-                        pos=self._pos,
-                        value=self._value,
-                        depth=depth,
-                        left=self._populate(left, depth + 1, l),
-                        right=self._populate(right, depth + 1, l),
-                        type='internal')
-
-
-class TreeScore(object):
-    """
-    A helper-class that is leveraged when executing IsolationForest.predict().
-    This class works by taking a user-provided record, `vector`, and measuring
-    its depth with respect to one of the IsolationTree, `tree`, instances in
-    the forest.
-
-    Args:
-        vector (list): a D-dimensional array.
-        tree (IsolationTree): instance of type IsolationTree.
-    """
-    def __init__(self, vector, tree):
-        self.vector = vector
-        self.depth = 0
-        self.path = self._traverse(tree.root)
-
-    def _traverse(self, node):
-        """
-        Recursively move down the current tree and enumerate its level or depth.
-        When traversal is complete, the depth is quantified given c(...), and
-        will be aggregated with results from other IsolationTree instances.
-
-        Args:
-            node (Node): the current tree node; see `Node` for details.
-        """
-
-        # at the end of recursion, return the number of levels traversed
-        if node.type == 'external':
-            if node.size == 1:
-                return self.depth
-            else:
-                self.depth = self.depth + c(node.size)
-                return self.depth
-        else:
-            attrib = node.pos  # the attribute
-            self.depth += 1  # increment the level
-
-            # if value is less than the nodes value, go left
-            if self.vector[attrib] < node.value:
-                return self._traverse(node.left)
-
-            # if value is greater than the nodes value, go right
-            else:
-                return self._traverse(node.right)

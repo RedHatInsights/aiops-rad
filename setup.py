@@ -10,6 +10,7 @@ setup(
     url="https://github.com/ManageIQ/aiops-rad",
     packages=["rad"],
     install_requires=["numpy>=1.14",
+                      "scikit-learn",
                       "scipy",
                       "matplotlib",
                       "pandas",
