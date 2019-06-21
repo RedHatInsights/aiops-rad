@@ -6,14 +6,11 @@ data-set and leverages such slicing to gauge magnitude of anomaly. In other
 words, the more partitions, the more "normal" the record.
 """
 
-import os
 import pickle
 import base64
 import logging
 import numpy as np
 import pandas as pd
-from pyarrow import parquet
-from datetime import datetime
 import matplotlib.pyplot as plt
 
 from io import BytesIO
@@ -178,6 +175,70 @@ class RADIsolationForest(IsolationForest):
 
     def _set_oob_score(self, X, y):
         super(RADIsolationForest, self)._set_oob_score(X, y)
+
+    @staticmethod
+    def dump(forest, out_file):
+        """
+        Persist an IsolationForest instance as either a python pickle object.
+
+        Args:
+            forest (IsolationForest): IsolationForest instance.
+            out_file (str): output filename.
+        """
+        if not isinstance(forest, IsolationForest):
+            raise ValueError("`forest` must be IsolationForest.")
+        with open(out_file, "wb") as handle:
+            pickle.dump(forest, handle, protocol=-1)
+
+    @staticmethod
+    def dumps(forest):
+        """
+        Persist an IsolationForest instance as either a Python byte-stream.
+
+        Args:
+            forest (IsolationForest): IsolationForest instance.
+
+        Returns:
+            byte-stream modeling an IsolationForest instance.
+        """
+        if not isinstance(forest, IsolationForest):
+            raise ValueError("`forest` must be IsolationForest.")
+        return pickle.dumps(forest, protocol=-1)
+
+    @staticmethod
+    def load(out_file):
+        """
+        Read-in a persisted IsolationForest instance. Such persistence models
+        the object as a Python pickle object.
+
+        Args:
+            out_file (pickle): persisted IsolationForest.
+
+        Returns:
+            an IsolationForest instance.
+        """
+        with open(out_file, "rb") as handle:
+            forest = pickle.load(handle)
+            if not isinstance(forest, IsolationForest):
+                raise ValueError("`forest` must be IsolationForest.")
+            return forest
+
+    @staticmethod
+    def loads(stream):
+        """
+        Read-in a persisted IsolationForest instance. Such persistence models
+        the object as a Python byte-stream.
+
+        Args:
+            stream (bytes): byte-stream representation of an IsolationForest.
+
+        Returns:
+            an IsolationForest instance.
+        """
+        forest = pickle.loads(stream)
+        if not isinstance(forest, IsolationForest):
+            raise ValueError("Argument must model an IsolationForest")
+        return forest
 
     def fit_predict(self, X, y=None):
         """
