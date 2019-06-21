@@ -7,7 +7,6 @@ words, the more partitions, the more "normal" the record.
 """
 
 import os
-import s3fs
 import pickle
 import base64
 import logging
