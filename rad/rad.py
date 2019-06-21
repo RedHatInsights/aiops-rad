@@ -6,18 +6,23 @@ data-set and leverages such slicing to gauge magnitude of anomaly. In other
 words, the more partitions, the more "normal" the record.
 """
 
+import os
+import s3fs
 import pickle
 import base64
 import logging
 import numpy as np
 import pandas as pd
+from pyarrow import parquet
+from datetime import datetime
 import matplotlib.pyplot as plt
 
 from io import BytesIO
+from scipy.stats import norm
 from sklearn.ensemble import IsolationForest
 
 
-__version__ = "0.10"
+__version__ = "0.11"
 
 
 logging.basicConfig(format="%(asctime)s | "+\
@@ -175,70 +180,6 @@ class RADIsolationForest(IsolationForest):
     def _set_oob_score(self, X, y):
         super(RADIsolationForest, self)._set_oob_score(X, y)
 
-    @staticmethod
-    def dump(forest, out_file):
-        """
-        Persist an IsolationForest instance as either a python pickle object.
-
-        Args:
-            forest (IsolationForest): IsolationForest instance.
-            out_file (str): output filename.
-        """
-        if not isinstance(forest, IsolationForest):
-            raise ValueError("`forest` must be IsolationForest.")
-        with open(out_file, "wb") as handle:
-            pickle.dump(forest, handle, protocol=-1)
-
-    @staticmethod
-    def dumps(forest):
-        """
-        Persist an IsolationForest instance as either a Python byte-stream.
-
-        Args:
-            forest (IsolationForest): IsolationForest instance.
-
-        Returns:
-            byte-stream modeling an IsolationForest instance.
-        """
-        if not isinstance(forest, IsolationForest):
-            raise ValueError("`forest` must be IsolationForest.")
-        return pickle.dumps(forest, protocol=-1)
-
-    @staticmethod
-    def load(out_file):
-        """
-        Read-in a persisted IsolationForest instance. Such persistence models
-        the object as a Python pickle object.
-
-        Args:
-            out_file (pickle): persisted IsolationForest.
-
-        Returns:
-            an IsolationForest instance.
-        """
-        with open(out_file, "rb") as handle:
-            forest = pickle.load(handle)
-            if not isinstance(forest, IsolationForest):
-                raise ValueError("`forest` must be IsolationForest.")
-            return forest
-
-    @staticmethod
-    def loads(stream):
-        """
-        Read-in a persisted IsolationForest instance. Such persistence models
-        the object as a Python byte-stream.
-
-        Args:
-            stream (bytes): byte-stream representation of an IsolationForest.
-
-        Returns:
-            an IsolationForest instance.
-        """
-        forest = pickle.loads(stream)
-        if not isinstance(forest, IsolationForest):
-            raise ValueError("Argument must model an IsolationForest")
-        return forest
-
     def fit_predict(self, X, y=None):
         """
         Fits data to the current model and execute prediction.
@@ -278,7 +219,7 @@ class RADIsolationForest(IsolationForest):
             out.append(record)
         return out
 
-    def fit_predict_contrast(self, X, training_frame, min_fc=1):
+    def fit_predict_contrast(self, X, training_frame, alpha=0.05):
         """
         Performs both model fitting and prediction as well as contrasting.
         Contrasting works by determining if a row's feature value, if anomalous,
@@ -325,11 +266,17 @@ class RADIsolationForest(IsolationForest):
                     vector = normal_subset[column]
                     pop_mean = vector.mean()
 
-                    # compute log-2 fold-change
-                    fc = np.log2(sample_mean / pop_mean)
-                    if abs(fc) >= min_fc or np.isinf(abs(fc)):
+                    # compute the z-score and corresponding p-value
+                    stdev = vector.std()
+                    z_score = (sample_mean - pop_mean) / max((stdev, 1))
+                    pvalue = norm.sf(z_score)
+
+                    # if p-value is significant, save the result
+                    if pvalue < alpha:
                         a_feature = {"feature": column,
-                                     "fold_change": fc,
+                                     "p_value": pvalue,
+                                     "z_score": z_score,
+                                     "stdev": stdev,
                                      "observed_value": sample_mean,
                                      "normal_mean": pop_mean}
                         anomalous_features.append(a_feature)
