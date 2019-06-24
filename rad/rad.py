@@ -14,10 +14,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from io import BytesIO
+from scipy.stats import norm
 from sklearn.ensemble import IsolationForest
 
 
-__version__ = "0.10"
+__version__ = "0.11"
 
 
 logging.basicConfig(format="%(asctime)s | "+\
@@ -278,7 +279,7 @@ class RADIsolationForest(IsolationForest):
             out.append(record)
         return out
 
-    def fit_predict_contrast(self, X, training_frame, min_fc=1):
+    def fit_predict_contrast(self, X, training_frame, alpha=0.05):
         """
         Performs both model fitting and prediction as well as contrasting.
         Contrasting works by determining if a row's feature value, if anomalous,
@@ -325,11 +326,17 @@ class RADIsolationForest(IsolationForest):
                     vector = normal_subset[column]
                     pop_mean = vector.mean()
 
-                    # compute log-2 fold-change
-                    fc = np.log2(sample_mean / pop_mean)
-                    if abs(fc) >= min_fc or np.isinf(abs(fc)):
+                    # compute the z-score and corresponding p-value
+                    stdev = vector.std()
+                    z_score = (sample_mean - pop_mean) / max((stdev, 1))
+                    pvalue = norm.sf(z_score)
+
+                    # if p-value is significant, save the result
+                    if pvalue < alpha:
                         a_feature = {"feature": column,
-                                     "fold_change": fc,
+                                     "p_value": pvalue,
+                                     "z_score": z_score,
+                                     "stdev": stdev,
                                      "observed_value": sample_mean,
                                      "normal_mean": pop_mean}
                         anomalous_features.append(a_feature)

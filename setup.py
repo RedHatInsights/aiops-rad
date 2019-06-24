@@ -3,7 +3,7 @@ from setuptools import setup
 
 setup(
     name="rad",
-    version="0.9.9",
+    version="0.11",
     description="AI-Ops Red Hat Anomaly Detection (RAD)",
     author="Parsa Hosseini, Ph.D.",
     author_email="phossein@redhat.com",
