@@ -12,7 +12,6 @@ setup(
     install_requires=["numpy>=1.14",
                       "scikit-learn",
                       "scipy",
-                      "s3fs",
                       "matplotlib",
                       "pandas",
                       "pyarrow",
