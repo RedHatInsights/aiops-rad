@@ -18,7 +18,7 @@ from scipy.stats import norm
 from sklearn.ensemble import IsolationForest
 
 
-__version__ = "0.11"
+__version__ = "0.12"
 
 
 logging.basicConfig(format="%(asctime)s | "+\
@@ -171,6 +171,9 @@ class RADIsolationForest(IsolationForest):
     """
 
     def __init__(self, **kwargs):
+        n_estimators = kwargs.get("n_estimators")
+        if not n_estimators or n_estimators <= 0:
+            kwargs["n_estimators"] = 20
         super(RADIsolationForest, self).__init__(**kwargs)
 
     def _set_oob_score(self, X, y):
@@ -308,8 +311,7 @@ class RADIsolationForest(IsolationForest):
         logging.info("Merged group names: {}".format(list(agg.groups.keys())))
 
         # contrasting requires two groups: those deemed anomalous versus normal
-        if len(agg.groups) != 2:
-            raise ValueError("Contrast error; add data or increase sample_size")
+        assert len(agg.groups) == 2
 
         # get the "normal" data, i.e. those deemed not anomalous
         normal_subset = agg.get_group(False)
